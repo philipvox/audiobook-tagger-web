@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+
+# OS files
+.DS_Store
+._*
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# Logs
+*.log
+
+# Desktop app artifacts (not part of web app)
+src-tauri/
+*.py
+__pycache__/
+scripts/
+stripe-textures/
+*.dmg
+*.app
+*.exe
+*.msi
+*.deb
+*.AppImage
+*.m4b
+*.epub
+chunk.js
+build-windows.ps1
+Dockerfile.linux-build
+.dockerignore
+The Talisman/
+
+# Backup files
+*.backup
+*.backup.*
+
+# Config (may contain secrets)
+config.json

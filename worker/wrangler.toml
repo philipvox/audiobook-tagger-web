@@ -1,0 +1,6 @@
+name = "audiobook-tagger-proxy"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Deploy with: npx wrangler deploy
+# Test locally: npx wrangler dev
