@@ -87,9 +87,22 @@ Open `http://localhost:5173`
 
 Browsers block cross-origin requests by default (CORS). The app tries to connect to your ABS server directly first. If that fails due to CORS, it falls back to a Cloudflare Worker proxy.
 
-**To avoid the proxy entirely**, add CORS headers to your ABS reverse proxy. This means your data goes straight from your browser to your server — nothing in between.
+**To avoid the proxy entirely**, enable CORS in ABS or your reverse proxy. This means your data goes straight from your browser to your server — nothing in between. The Settings page shows whether you're connected directly or via the proxy.
 
-### Option 1: Add CORS Headers (recommended — no proxy needed)
+### Option 1: Enable CORS in AudiobookShelf (easiest)
+
+ABS has built-in CORS support. In your ABS web UI:
+
+1. Go to **Settings** (gear icon)
+2. Find the CORS / allowed origins setting
+3. Add the URL where you're running the tagger (e.g., `https://tagger.mysecretlibrary.com`)
+4. Save
+
+That's it — the app will connect directly to your server with no proxy involved.
+
+### Option 2: Add CORS Headers to Your Reverse Proxy
+
+If you prefer to configure CORS at the reverse proxy level instead:
 
 **Caddy** (add inside your ABS site block):
 ```
@@ -123,11 +136,9 @@ labels:
 
 Replace the origin URL with wherever you host the app. Use `*` to allow any origin (less secure but simpler).
 
-After adding CORS headers, the app connects directly and the proxy is never contacted.
+### Option 3: Deploy Your Own Proxy
 
-### Option 2: Deploy Your Own Proxy
-
-If you can't modify your reverse proxy, deploy your own Cloudflare Worker (free tier):
+If you can't modify ABS or your reverse proxy, deploy your own Cloudflare Worker (free tier):
 
 ```bash
 cd worker
@@ -136,9 +147,9 @@ npx wrangler deploy
 
 Set `ALLOWED_ORIGINS` in the worker's environment to restrict which domains can use it. Then set `VITE_PROXY_URL` when building the app to point to your worker.
 
-### Option 3: Use the Default Proxy
+### Option 4: Use the Default Proxy
 
-The app ships with a default proxy (`audiobook-tagger-proxy.workers.dev`). The proxy code is fully open source (`worker/index.js`, ~100 lines). It forwards requests and returns responses — nothing is stored or logged. But if you'd rather not trust a third party, use Option 1 or 2.
+The app ships with a default proxy. The proxy code is fully open source (`worker/index.js`, ~100 lines) — it forwards requests and returns responses, nothing is stored or logged. If you'd rather not trust a third party, use Option 1, 2, or 3.
 
 ## Architecture
 

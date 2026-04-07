@@ -383,7 +383,7 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
               <div className={`text-xs mt-1.5 ${connectionType === 'direct' ? 'text-green-500' : 'text-yellow-500'}`}>
                 {connectionType === 'direct'
                   ? '✓ Direct connection — your data goes straight to your server'
-                  : '⚠ Connected via CORS proxy — add CORS headers to your reverse proxy for a direct connection'}
+                  : '⚠ Connected via CORS proxy — enable CORS in your ABS settings or reverse proxy for a direct connection'}
               </div>
             )}
           </div>

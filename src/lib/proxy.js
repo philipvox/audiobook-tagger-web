@@ -2,7 +2,7 @@
 // Smart fetch — tries direct first, falls back to CORS proxy if blocked.
 // This way it works both locally (direct) and on GitHub Pages (via proxy).
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'https://audiobook-tagger-proxy.workers.dev';
+const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'https://audiobook-tagger-proxy.philipvox.workers.dev';
 
 /**
  * Fetch with an AbortController timeout.

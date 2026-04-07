@@ -61,15 +61,15 @@ function checkRateLimit(ip) {
   return true;
 }
 
-// Clean up stale entries every 5 minutes
-setInterval(() => {
+// Clean up stale rate limit entries inline (no global setInterval allowed)
+function cleanupRateLimits() {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
       rateLimitMap.delete(ip);
     }
   }
-}, 300_000);
+}
 
 function isAllowedTarget(url) {
   try {
@@ -127,6 +127,7 @@ function jsonResponse(data, status = 200, origin) {
 
 export default {
   async fetch(request, env) {
+    cleanupRateLimits();
     const origin = request.headers.get('Origin') || '';
 
     // Handle CORS preflight
