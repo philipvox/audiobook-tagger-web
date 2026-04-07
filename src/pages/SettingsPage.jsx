@@ -241,9 +241,11 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
 
   const [absLibraries, setAbsLibraries] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState(null); // 'success' | 'error' | null
+  const [connectionType, setConnectionType] = useState(null); // 'direct' | 'proxy' | null
 
-  const testConnection = async () => {
+  const handleTestConnection = async () => {
     setConnectionStatus(null);
+    setConnectionType(null);
     const urlError = validateAbsUrl(localConfig.abs_base_url);
     if (urlError) {
       toast.error('Invalid Server URL', urlError);
@@ -251,7 +253,15 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
       return;
     }
     try {
-      const { absApi } = await import('../lib/proxy');
+      const { absApi, testConnection } = await import('../lib/proxy');
+      // First test connection type
+      const connResult = await testConnection(localConfig.abs_base_url, localConfig.abs_api_token);
+      if (connResult.direct) {
+        setConnectionType('direct');
+      } else if (connResult.proxy) {
+        setConnectionType('proxy');
+      }
+      // Then fetch libraries
       const data = await absApi(localConfig.abs_base_url, localConfig.abs_api_token, '/api/libraries');
       const libs = data.libraries || [];
       setAbsLibraries(libs);
@@ -261,7 +271,6 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
       }
     } catch (e) {
       setConnectionStatus('error');
-      console.error('Connection failed:', e);
     }
   };
 
@@ -359,7 +368,7 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
             )}
 
             <button
-              onClick={testConnection}
+              onClick={handleTestConnection}
               className={`w-full py-3 text-sm font-medium rounded-lg transition-colors ${
                 connectionStatus === 'success'
                   ? 'bg-green-600/20 text-green-400'
@@ -370,6 +379,13 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
             >
               {connectionStatus === 'success' ? 'Connected' : connectionStatus === 'error' ? 'Connection Failed — Retry' : 'Connect & Detect Libraries'}
             </button>
+            {connectionStatus === 'success' && connectionType && (
+              <div className={`text-xs mt-1.5 ${connectionType === 'direct' ? 'text-green-500' : 'text-yellow-500'}`}>
+                {connectionType === 'direct'
+                  ? '✓ Direct connection — your data goes straight to your server'
+                  : '⚠ Connected via CORS proxy — add CORS headers to your reverse proxy for a direct connection'}
+              </div>
+            )}
           </div>
 
           {/* Right: AI & Processing */}

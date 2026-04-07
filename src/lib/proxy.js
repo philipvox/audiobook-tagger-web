@@ -35,6 +35,7 @@ export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000) {
       directOpts.body = typeof body === 'string' ? body : JSON.stringify(body);
     }
     const res = await fetchWithTimeout(targetUrl, directOpts, timeoutMs);
+    res._connectionType = 'direct';
     return res;
   } catch (directError) {
     // Direct failed (likely CORS) — try proxy
@@ -52,7 +53,49 @@ export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000) {
     }),
   }, timeoutMs);
 
+  res._connectionType = 'proxy';
   return res;
+}
+
+/**
+ * Test whether a direct connection to the ABS server works (no proxy).
+ * Returns { direct: true/false, proxy: true/false, error?: string }
+ */
+export async function testConnection(absBaseUrl, absToken) {
+  const url = `${absBaseUrl.replace(/\/$/, '')}/api/libraries`;
+  const headers = {
+    'Authorization': `Bearer ${absToken}`,
+    'Content-Type': 'application/json',
+  };
+  const result = { direct: false, proxy: false };
+
+  // Test direct
+  try {
+    const res = await fetchWithTimeout(url, {
+      method: 'GET',
+      headers,
+      credentials: 'omit',
+    }, 10000);
+    if (res.ok) result.direct = true;
+  } catch (e) {
+    // CORS or network error
+  }
+
+  // Test proxy (only if direct failed)
+  if (!result.direct) {
+    try {
+      const res = await fetchWithTimeout(`${PROXY_URL}/proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, method: 'GET', headers }),
+      }, 10000);
+      if (res.ok) result.proxy = true;
+    } catch (e) {
+      result.error = e.message;
+    }
+  }
+
+  return result;
 }
 
 /**

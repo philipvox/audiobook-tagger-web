@@ -83,20 +83,62 @@ npm run dev
 
 Open `http://localhost:5173`
 
-## CORS Proxy
+## CORS & Connectivity
 
-Your browser can't call your ABS server directly due to CORS. The app includes a Cloudflare Worker (`worker/`) that acts as a proxy.
+Browsers block cross-origin requests by default (CORS). The app tries to connect to your ABS server directly first. If that fails due to CORS, it falls back to a Cloudflare Worker proxy.
 
-To deploy your own:
+**To avoid the proxy entirely**, add CORS headers to your ABS reverse proxy. This means your data goes straight from your browser to your server — nothing in between.
+
+### Option 1: Add CORS Headers (recommended — no proxy needed)
+
+**Caddy** (add inside your ABS site block):
+```
+header {
+    Access-Control-Allow-Origin  https://tagger.mysecretlibrary.com
+    Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"
+    Access-Control-Allow-Headers "Authorization, Content-Type"
+}
+@options method OPTIONS
+respond @options 204
+```
+
+**Nginx** (add inside your ABS `location /` block):
+```nginx
+add_header Access-Control-Allow-Origin "https://tagger.mysecretlibrary.com" always;
+add_header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS" always;
+add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+
+if ($request_method = OPTIONS) {
+    return 204;
+}
+```
+
+**Traefik** (middleware label):
+```yaml
+labels:
+  - "traefik.http.middlewares.abs-cors.headers.accesscontrolalloworiginlist=https://tagger.mysecretlibrary.com"
+  - "traefik.http.middlewares.abs-cors.headers.accesscontrolallowmethods=GET,POST,PATCH,DELETE,OPTIONS"
+  - "traefik.http.middlewares.abs-cors.headers.accesscontrolallowheaders=Authorization,Content-Type"
+```
+
+Replace the origin URL with wherever you host the app. Use `*` to allow any origin (less secure but simpler).
+
+After adding CORS headers, the app connects directly and the proxy is never contacted.
+
+### Option 2: Deploy Your Own Proxy
+
+If you can't modify your reverse proxy, deploy your own Cloudflare Worker (free tier):
 
 ```bash
 cd worker
 npx wrangler deploy
 ```
 
-Set `ALLOWED_ORIGINS` in the worker's environment to restrict which domains can use it.
+Set `ALLOWED_ORIGINS` in the worker's environment to restrict which domains can use it. Then set `VITE_PROXY_URL` when building the app to point to your worker.
 
-The app tries direct fetch first and falls back to the proxy only when needed.
+### Option 3: Use the Default Proxy
+
+The app ships with a default proxy (`audiobook-tagger-proxy.workers.dev`). The proxy code is fully open source (`worker/index.js`, ~100 lines). It forwards requests and returns responses — nothing is stored or logged. But if you'd rather not trust a third party, use Option 1 or 2.
 
 ## Architecture
 
