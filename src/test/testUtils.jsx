@@ -8,7 +8,7 @@ import { vi } from 'vitest';
 export const MockAppProvider = ({ children, config = {}, groups = [] }) => {
   const mockContext = {
     config: {
-      abs_base_url: 'http://localhost:13378',
+      abs_base_url: 'http://localhost:8000',
       abs_api_token: 'test-token',
       abs_library_id: 'lib_123',
       metadata_concurrency: 10,
@@ -125,7 +125,7 @@ export const createMockAudioFile = (overrides = {}) => ({
 
 // Create mock config
 export const createMockConfig = (overrides = {}) => ({
-  abs_base_url: 'http://localhost:13378',
+  abs_base_url: 'http://localhost:8000',
   abs_api_token: 'test-token-123',
   abs_library_id: 'lib_abc123',
   library_paths: ['/test/audiobooks'],

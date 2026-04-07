@@ -40,9 +40,18 @@ stripe-textures/
 *.epub
 chunk.js
 build-windows.ps1
-Dockerfile.linux-build
-.dockerignore
+The Talisman
 The Talisman/
+
+# Docker (not needed for static site)
+Dockerfile*
+docker-compose*
+dockerignore
+.dockerignore
+Makefile
+
+# Desktop CI workflow
+.github/workflows/build.yml
 
 # Backup files
 *.backup

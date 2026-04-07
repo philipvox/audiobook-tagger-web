@@ -24,7 +24,7 @@ describe('AppContext', () => {
     mockInvoke.mockImplementation(async (cmd) => {
       if (cmd === 'get_config') {
         return {
-          abs_base_url: 'http://localhost:13378',
+          abs_base_url: 'http://localhost:8000',
           abs_api_token: 'test-token',
           metadata_concurrency: 10,
         };
