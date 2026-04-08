@@ -649,7 +649,7 @@ Return JSON: {"genres":["Genre1","Genre2"]}`;
   assign_tags_with_gpt: async (args) => {
     const config = getLocalConfig();
     const books = args.books || [];
-    const dnaEnabled = args.dnaEnabled !== false; // default ON
+    const dnaEnabled = args.dnaEnabled === true; // default OFF for web
     const results = [];
 
     for (const book of books) {
