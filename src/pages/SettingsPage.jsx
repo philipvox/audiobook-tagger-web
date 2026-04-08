@@ -115,15 +115,46 @@ const PromptEditor = ({ label, subtitle, value, defaultValue, onChange, rows = 6
 };
 
 /** Validate ABS server URL — must be HTTPS (or localhost for dev). */
+const PRIVATE_IP_PATTERNS = [
+  /^localhost$/i, /^127\./, /^10\./, /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,  // Tailscale CGNAT
+  /^169\.254\./, /^0\.0\.0\.0$/,
+];
+
+function getUrlWarning(url) {
+  if (!url || !url.trim()) return null;
+  try {
+    const parsed = new URL(url.trim());
+    const host = parsed.hostname;
+
+    // Check HTTP (not HTTPS)
+    if (parsed.protocol === 'http:' && host !== 'localhost' && host !== '127.0.0.1') {
+      return {
+        type: 'http',
+        message: 'The web version requires HTTPS. Your server uses HTTP which browsers block for security. Options: (1) Use the desktop app (works with any server), (2) Put your ABS server behind a reverse proxy with HTTPS (Caddy makes this easy).',
+      };
+    }
+
+    // Check private/local IPs
+    if (PRIVATE_IP_PATTERNS.some(p => p.test(host))) {
+      return {
+        type: 'private',
+        message: 'Local network servers can\'t be reached from the web version. Use the desktop app instead — it connects directly to servers on your local network.',
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function validateAbsUrl(url) {
   if (!url || !url.trim()) return null; // empty is OK (not configured yet)
   try {
     const parsed = new URL(url.trim());
     if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
       return 'Server URL must use HTTPS (except localhost for local development)';
-    }
-    if (parsed.pathname !== '/' && parsed.pathname !== '') {
-      // Allow trailing slash but warn about paths
     }
     return null; // valid
   } catch {
@@ -271,6 +302,12 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
       }
     } catch (e) {
       setConnectionStatus('error');
+      const warning = getUrlWarning(localConfig.abs_base_url);
+      if (warning?.type === 'http') {
+        toast.error('HTTPS Required', 'The web version can\'t connect to HTTP servers. Use the desktop app or add HTTPS to your server.');
+      } else if (warning?.type === 'private') {
+        toast.error('Local Network', 'Can\'t reach local servers from the web. Use the desktop app for local network access.');
+      }
     }
   };
 
@@ -328,6 +365,16 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
               onChange={(v) => setLocalConfig({ ...localConfig, abs_base_url: v })}
               placeholder="https://your-abs-server.com"
             />
+            {(() => {
+              const warning = getUrlWarning(localConfig.abs_base_url);
+              if (!warning) return null;
+              return (
+                <div className="flex gap-2 p-3 bg-amber-900/20 border border-amber-700/30 rounded-lg text-xs text-amber-400">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{warning.message}</span>
+                </div>
+              );
+            })()}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-sm text-gray-400">API Token</label>
