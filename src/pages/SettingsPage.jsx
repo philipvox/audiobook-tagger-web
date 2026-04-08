@@ -317,41 +317,41 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
     <div className="h-full overflow-y-auto bg-neutral-950">
       {/* Nav header — matches ActionBar sizing */}
       {navigateTo && (
-        <div className="px-4 py-3 flex items-center gap-2">
+        <div className="px-3 md:px-4 py-2.5 md:py-3 flex items-center gap-2">
           {logoSvg && (
-            <img src={logoSvg} alt="Audiobook Tagger" style={{ height: '36px' }} className="invert opacity-90 mr-1" />
+            <img src={logoSvg} alt="Audiobook Tagger" style={{ height: '28px' }} className="invert opacity-90 mr-0.5 md:mr-1 flex-shrink-0 md:h-[36px]" />
           )}
-          <nav className="flex items-center gap-0.5 bg-neutral-900/50 rounded-full p-1 mr-2">
+          <nav className="flex items-center gap-0.5 bg-neutral-900/50 rounded-full p-1 mr-1 md:mr-2 flex-shrink-0">
             <button
               onClick={() => navigateTo('scanner')}
-              className="px-4 py-2 text-sm font-medium rounded-full transition-all flex items-center gap-2 text-gray-500 hover:text-gray-300"
+              className="px-3 md:px-4 py-1.5 md:py-2 text-sm font-medium rounded-full transition-all flex items-center gap-1.5 md:gap-2 text-gray-500 hover:text-gray-300"
             >
               <Library className="w-4 h-4" />
-              Library
+              <span className="hidden sm:inline">Library</span>
             </button>
             <button
               onClick={() => navigateTo('settings')}
-              className="px-4 py-2 text-sm font-medium rounded-full transition-all flex items-center gap-2 bg-neutral-800 text-white"
+              className="px-3 md:px-4 py-1.5 md:py-2 text-sm font-medium rounded-full transition-all flex items-center gap-1.5 md:gap-2 bg-neutral-800 text-white"
             >
               <Settings className="w-4 h-4" />
-              Settings
+              <span className="hidden sm:inline">Settings</span>
             </button>
           </nav>
           {onOpenWizard && (
             <button
               onClick={onOpenWizard}
-              className="px-3 py-2 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1.5"
+              className="px-3 py-1.5 md:py-2 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1.5 flex-shrink-0"
             >
               <Sparkles className="w-4 h-4" />
-              Setup Wizard
+              <span className="hidden sm:inline">Setup Wizard</span>
             </button>
           )}
         </div>
       )}
-      <div className="max-w-full mx-auto px-6 pb-6">
+      <div className="max-w-full mx-auto px-3 md:px-6 pb-6">
 
         {/* Full-width grid — ABS + AI side by side above the fold */}
-        <div className="grid grid-cols-2 gap-6 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
 
           {/* Left: Connection */}
           <div className="bg-neutral-900/50 rounded-xl p-6 space-y-5">
@@ -533,7 +533,7 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
         </div>
 
         {/* Second row — Processing + Save side by side */}
-        <div className="grid grid-cols-2 gap-6 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div className="bg-neutral-900/50 rounded-xl p-6">
               <h3 className="text-lg font-semibold text-white mb-4">Processing</h3>
               <div className="space-y-3">

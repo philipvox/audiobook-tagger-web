@@ -2698,7 +2698,7 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
       />
 
       {/* Main content area with book list and metadata panel */}
-      <div className="flex-1 flex overflow-hidden bg-neutral-950">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden bg-neutral-950">
         <BookList
           groups={groups}
           selectedFiles={selectedFiles}

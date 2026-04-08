@@ -417,7 +417,7 @@ export function MetadataPanel({ group, onEdit, onInlineEdit }) {
 
   if (!group) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-neutral-950">
+      <div className="hidden md:flex flex-1 items-center justify-center bg-neutral-950">
         <div className="text-center max-w-md px-6">
           <Book className="w-16 h-16 text-neutral-700 mx-auto mb-4" />
           <h3 className="text-xl font-semibold text-white mb-2">Select a Book</h3>
@@ -446,7 +446,7 @@ export function MetadataPanel({ group, onEdit, onInlineEdit }) {
   const confidenceConfig = confidence ? getConfidenceConfig(confidence.overall) : null;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-neutral-950 relative">
+    <div className="flex-1 overflow-y-auto bg-neutral-950 relative min-h-0">
       {/* Small save button — top-right corner when dirty */}
       {(dirty || pushResult) && (
         <button

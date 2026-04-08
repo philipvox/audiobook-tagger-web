@@ -179,30 +179,30 @@ export function ActionBar({
   };
 
   return (
-    <div className="px-5 py-3.5 flex items-center gap-3">
+    <div className="px-3 md:px-5 py-2.5 md:py-3.5 flex items-center gap-2 md:gap-3 overflow-x-auto">
       {/* Logo + Nav */}
       {logoSvg && (
-        <img src={logoSvg} alt="Audiobook Tagger" style={{ height: '36px' }} className="invert opacity-90 mr-1" />
+        <img src={logoSvg} alt="Audiobook Tagger" style={{ height: '28px' }} className="invert opacity-90 mr-0.5 md:mr-1 flex-shrink-0 md:h-[36px]" />
       )}
       {navigateTo && (
-        <nav className="flex items-center gap-0.5 bg-neutral-900/50 rounded-full p-1 mr-2">
+        <nav className="flex items-center gap-0.5 bg-neutral-900/50 rounded-full p-1 mr-1 md:mr-2 flex-shrink-0">
           <button
             onClick={() => navigateTo('scanner')}
-            className={`px-4 py-2 text-sm font-medium rounded-full transition-all flex items-center gap-2 ${
+            className={`px-3 md:px-4 py-1.5 md:py-2 text-sm font-medium rounded-full transition-all flex items-center gap-1.5 md:gap-2 ${
               activeTab === 'scanner' ? 'bg-neutral-800 text-white' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
             <Library className="w-4 h-4" />
-            Library
+            <span className="hidden sm:inline">Library</span>
           </button>
           <button
             onClick={() => navigateTo('settings')}
-            className={`px-4 py-2 text-sm font-medium rounded-full transition-all flex items-center gap-2 ${
+            className={`px-3 md:px-4 py-1.5 md:py-2 text-sm font-medium rounded-full transition-all flex items-center gap-1.5 md:gap-2 ${
               activeTab === 'settings' ? 'bg-neutral-800 text-white' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
             <Settings className="w-4 h-4" />
-            Settings
+            <span className="hidden sm:inline">Settings</span>
           </button>
         </nav>
       )}
@@ -240,7 +240,7 @@ export function ActionBar({
               </button>
 
               {showEnrichMenu && (
-                <div className="absolute top-full left-0 mt-1 w-72 bg-neutral-900 rounded-xl border border-neutral-800 shadow-xl py-1 z-50">
+                <div className="fixed md:absolute top-auto md:top-full left-3 right-3 md:left-0 md:right-auto mt-1 md:w-72 bg-neutral-900 rounded-xl border border-neutral-800 shadow-xl py-1 z-50 max-h-[70vh] overflow-y-auto">
                   {/* Consolidated GPT Calls */}
                   {hasOpenAiKey && (
                     <>
@@ -445,11 +445,11 @@ export function ActionBar({
       <div className="flex-1" />
 
       {/* Right side — selection info */}
-      <div className="flex items-center gap-3 flex-shrink-0">
+      <div className="flex items-center gap-2 md:gap-3 flex-shrink-0">
         {hasSelection ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-white font-medium">
-              {selectedCount} selected
+          <div className="flex items-center gap-1.5 md:gap-2">
+            <span className="text-xs md:text-sm text-white font-medium">
+              {selectedCount}<span className="hidden sm:inline"> selected</span>
             </span>
             <button
               onClick={onClearSelection}
