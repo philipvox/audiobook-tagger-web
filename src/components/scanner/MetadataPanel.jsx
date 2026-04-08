@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { callBackend } from '../../api';
-import { Book, Edit, X, Database, Folder, Bot, FileAudio, Globe, Music, Library, FolderOpen, Search } from 'lucide-react';
+import { Book, Edit, X, Database, Folder, Bot, FileAudio, Globe, Music, Library, FolderOpen, Search, ArrowLeft } from 'lucide-react';
 import { useToast } from '../Toast';
 
 // Source badge configuration
@@ -157,7 +157,7 @@ function changedClass(group, field) {
   return isChanged(group, field) ? 'ring-1 ring-amber-500/40 bg-amber-500/5' : '';
 }
 
-export function MetadataPanel({ group, onEdit, onInlineEdit }) {
+export function MetadataPanel({ group, onEdit, onInlineEdit, onBack }) {
   const toast = useToast();
   const [coverData, setCoverData] = useState(null);
   const [coverUrl, setCoverUrl] = useState(null);
@@ -460,11 +460,21 @@ export function MetadataPanel({ group, onEdit, onInlineEdit }) {
           {pushResult === 'success' ? 'Saved!' : 'Save Local'}
         </button>
       )}
+      {/* Mobile back button */}
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="md:hidden flex items-center gap-2 px-4 py-3 text-sm text-gray-400 hover:text-white transition-colors border-b border-neutral-800"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to list
+        </button>
+      )}
       {/* Header Section */}
-      <div className="p-6 pb-0">
-        <div className="flex gap-6">
+      <div className="p-4 md:p-6 pb-0">
+        <div className="flex gap-4 md:gap-6">
           {/* Cover Art */}
-          <div className="flex-shrink-0 w-48">
+          <div className="flex-shrink-0 w-28 md:w-48">
             <div className="aspect-square bg-neutral-900 rounded-lg overflow-hidden relative">
               {coverUrl ? (
                 <>
@@ -619,7 +629,7 @@ export function MetadataPanel({ group, onEdit, onInlineEdit }) {
       </div>
 
       {/* Tabs */}
-      <div className="px-6 mt-6 border-b border-neutral-800">
+      <div className="px-4 md:px-6 mt-6 border-b border-neutral-800">
         <div className="flex gap-6">
           {['about', 'chapters', 'details'].map((tab) => (
             <button
@@ -641,7 +651,7 @@ export function MetadataPanel({ group, onEdit, onInlineEdit }) {
       </div>
 
       {/* Tab Content */}
-      <div className="p-6">
+      <div className="p-4 md:p-6">
         {activeTab === 'about' && (
           <div className="space-y-6">
             {/* Description — click to edit */}

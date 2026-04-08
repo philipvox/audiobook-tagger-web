@@ -665,7 +665,7 @@ export function BookList({
   const offsetY = visibleRange.start * ITEM_HEIGHT;
 
   return (
-    <div className="w-full h-1/2 md:h-auto md:w-2/5 overflow-hidden bg-neutral-950 flex flex-col border-b md:border-b-0 border-neutral-800">
+    <div className={`w-full md:h-auto md:w-2/5 overflow-hidden bg-neutral-950 flex-col border-b md:border-b-0 border-neutral-800 ${selectedGroup ? 'hidden md:flex' : 'flex flex-1'}`}>
       {/* Header - Minimal Filter Bar */}
       <div className="px-4 py-3 flex-shrink-0">
         {/* Filter Bar: Search + Filter Dropdown */}

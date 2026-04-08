@@ -2740,6 +2740,7 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
           }}
           validationData={selectedGroup ? validationResults[selectedGroup.id] : null}
           onFixIssue={handleFixSingleIssue}
+          onBack={() => setSelectedGroup(null)}
         />
       </div>
 
