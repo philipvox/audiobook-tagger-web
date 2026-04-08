@@ -35,6 +35,7 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [selectedGroupIds, setSelectedGroupIds] = useState(new Set());
   const [expandedGroups, setExpandedGroups] = useState(new Set());
+  const [showEnrichMenu, setShowEnrichMenu] = useState(false);
 
   // Consolidated modal and batch operation state
   const modals = useModals();
@@ -2695,6 +2696,8 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
         onToggleForceFresh={() => batch.toggleForceFresh()}
         dnaEnabled={dnaEnabled}
         onToggleDna={() => batch.toggleDna()}
+        showEnrichMenu={showEnrichMenu}
+        onToggleEnrichMenu={setShowEnrichMenu}
       />
 
       {/* Main content area with book list and metadata panel */}
@@ -2727,6 +2730,7 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
           validationResults={validationResults}
           hasAbsConnection={!!(config?.abs_base_url && config?.abs_api_token)}
           onNavigateToSettings={onNavigateToSettings}
+          onOpenEnrich={() => setShowEnrichMenu(true)}
         />
 
         <MetadataPanel

@@ -196,8 +196,10 @@ export function BookList({
   hasAbsConnection = false,
   onImportFromAbs,
   onNavigateToSettings,
+  onOpenEnrich,
 }) {
   const [coverCache, setCoverCache] = useState({});
+  const [searchExpanded, setSearchExpanded] = useState(false);
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 30 });
   const listRef = useRef(null);
   const coverLoadingRef = useRef(new Set());
@@ -668,9 +670,9 @@ export function BookList({
     <div className={`w-full md:h-auto md:w-2/5 overflow-hidden bg-neutral-950 flex-col border-b md:border-b-0 border-neutral-800 ${selectedGroup ? 'hidden md:flex' : 'flex flex-1'}`}>
       {/* Header - Minimal Filter Bar */}
       <div className="px-4 py-3 flex-shrink-0">
-        {/* Filter Bar: Search + Filter Dropdown */}
+        {/* Filter Bar: Search + Filter + Enrich */}
         <div className="flex items-center gap-2">
-          {/* Search */}
+          {/* Search — always expanded */}
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
             <input
@@ -806,6 +808,17 @@ export function BookList({
               </div>
             )}
           </div>
+
+          {/* Enrich button (mobile — triggers menu in ActionBar) */}
+          {onOpenEnrich && (
+            <button
+              onClick={onOpenEnrich}
+              className="md:hidden flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-neutral-800 text-gray-400 hover:text-white hover:border-neutral-700 hover:bg-neutral-800 transition-colors flex-shrink-0"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Enrich</span>
+            </button>
+          )}
         </div>
 
         {/* Results count - shows when filtering */}

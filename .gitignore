@@ -6,6 +6,7 @@ dist/
 
 # Environment / secrets
 .env
+.env.*
 .env.local
 .env.production
 

@@ -31,11 +31,11 @@ function getDnaSystemPrompt(config) {
 const CONFIG_KEY = 'audiobook_tagger_config';
 
 const DEFAULT_CONFIG = {
-  abs_base_url: '',
-  abs_api_token: '',
+  abs_base_url: import.meta.env.VITE_ABS_URL || '',
+  abs_api_token: import.meta.env.VITE_ABS_TOKEN || '',
   abs_library_id: '',
-  openai_api_key: null,
-  anthropic_api_key: null,
+  openai_api_key: import.meta.env.VITE_OPENAI_KEY || null,
+  anthropic_api_key: import.meta.env.VITE_ANTHROPIC_KEY || null,
   backup_tags: true,
   genre_enforcement: true,
   performance_preset: 'balanced',
