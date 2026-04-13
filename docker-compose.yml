@@ -1,0 +1,14 @@
+# Audiobook Tagger — Docker Compose
+# Usage: docker compose up -d
+# Access: http://localhost:8080 (or your server IP)
+#
+# For Unraid: Copy this to your appdata folder and run docker compose up -d
+# Tip: Self-hosting over HTTP means your ABS server can also be HTTP — no HTTPS needed!
+
+services:
+  audiobook-tagger:
+    build: .
+    container_name: audiobook-tagger
+    ports:
+      - "8080:80"
+    restart: unless-stopped

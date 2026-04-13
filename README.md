@@ -62,6 +62,26 @@ A browser-based metadata manager for [AudiobookShelf](https://www.audiobookshelf
 
 Fork this repo and enable GitHub Pages — the included workflow auto-deploys on push.
 
+### Docker (recommended for self-hosting)
+
+```bash
+git clone https://github.com/philipvox/audiobook-tagger-web.git
+cd audiobook-tagger-web
+
+docker compose up -d
+```
+
+Access at `http://localhost:8080`. To change the port, edit `docker-compose.yml`.
+
+Or build and run manually:
+
+```bash
+docker build -t audiobook-tagger .
+docker run -d -p 8080:80 --name audiobook-tagger audiobook-tagger
+```
+
+**Tip:** Self-hosting over HTTP means your ABS server can also be HTTP - no mixed content issues.
+
 ### Any Static Host
 
 ```bash

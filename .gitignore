@@ -44,11 +44,11 @@ build-windows.ps1
 The Talisman
 The Talisman/
 
-# Docker (not needed for static site)
-Dockerfile*
-docker-compose*
+# Docker (keep Dockerfile, docker-compose.yml, .dockerignore for self-hosting)
+Dockerfile.dev
+Dockerfile.linux-build
+docker-compose.web.yml
 dockerignore
-.dockerignore
 Makefile
 
 # Desktop CI workflow

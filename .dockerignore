@@ -1,0 +1,10 @@
+target
+node_modules
+dist
+.git
+__pycache__
+The Talisman
+stripe-textures
+*.dmg
+*.exe
+*.msi
