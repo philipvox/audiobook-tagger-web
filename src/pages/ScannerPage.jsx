@@ -1429,10 +1429,13 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
     try {
       const result = await callBackend('resolve_metadata_batch', { books, config });
 
+      // #2: with preserve_series ON (default) resolution never touches series/sequence.
+      const keepSeries = config?.preserve_series !== false;
       setGroups(prevGroups => {
         return prevGroups.map(g => {
-          const r = result.results?.find(r => r.id === g.id);
-          if (!r || r.error || !r.changed) return g;
+          const found = result.results?.find(r => r.id === g.id);
+          if (!found || found.error || !found.changed) return g;
+          const r = keepSeries ? { ...found, series: undefined, sequence: undefined } : found;
           const fields = new Set(g.changedFields || []);
           if (r.title && r.title !== g.metadata.title) fields.add('title');
           if (r.author && r.author !== g.metadata.author) fields.add('author');

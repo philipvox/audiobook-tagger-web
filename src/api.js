@@ -14,6 +14,11 @@ function safe(value) {
   return JSON.stringify(String(value));
 }
 
+/** Missing (undefined), explicit null, and empty string all count as "no value". */
+function hasValue(v) {
+  return v !== undefined && v !== null && String(v).trim() !== '';
+}
+
 /** Get the effective system prompt (custom override or default). */
 function getSystemPrompt(config) {
   return config?.custom_system_prompt?.trim() || SYSTEM_PROMPT;
@@ -38,6 +43,10 @@ const DEFAULT_CONFIG = {
   anthropic_api_key: import.meta.env.VITE_ANTHROPIC_KEY || null,
   backup_tags: true,
   genre_enforcement: true,
+  // #2: never touch ABS series name/number on push or during AI metadata
+  // resolution. AI-guessed series names vary per book and ABS creates a new
+  // series for every name it doesn't already know.
+  preserve_series: true,
   performance_preset: 'balanced',
   ai_model: 'gpt-5-nano',
   ai_base_url: 'https://api.openai.com',
@@ -148,16 +157,95 @@ function convertDnaToTags(dna) {
 // ABS PAYLOAD BUILDER — matches desktop build_update_payload() exactly
 // ============================================================================
 
+// ============================================================================
+// SERIES HELPERS (#2)
+// ============================================================================
+
+/**
+ * Normalize a series name for matching against the library's existing series:
+ * case-insensitive, trimmed, leading "The " and trailing " Series"/" Saga"/
+ * " Trilogy"/" Cycle" removed, punctuation stripped, whitespace collapsed.
+ */
+export function normalizeSeriesName(name) {
+  if (name == null) return '';
+  let n = String(name).toLowerCase().trim();
+  n = n.replace(/['\u2018\u2019`]/g, ''); // apostrophes join: "Ender's" -> "enders"
+  n = n.replace(/&/g, ' and ');
+  n = n.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  n = n.replace(/^the\s+/, '');
+  n = n.replace(/\s+(series|saga|trilogy|cycle)$/, '');
+  return n.trim();
+}
+
+/** Find an existing library series ({id, name}) whose normalized name matches. */
+export function findLibrarySeries(name, librarySeries) {
+  const key = normalizeSeriesName(name);
+  if (!key || !Array.isArray(librarySeries)) return null;
+  return librarySeries.find(s => s && s.name && normalizeSeriesName(s.name) === key) || null;
+}
+
+/** Fetch every series in an ABS library as [{id, name}] (paginated). */
+export async function fetchLibrarySeries(baseUrl, token, libraryId) {
+  const out = [];
+  const limit = 500;
+  for (let page = 0; page < 200; page++) {
+    const data = await absApi(baseUrl, token, `/api/libraries/${libraryId}/series?limit=${limit}&page=${page}`);
+    const results = data?.results || [];
+    for (const s of results) if (s?.id && s?.name) out.push({ id: s.id, name: s.name });
+    const total = data?.total ?? out.length;
+    if (results.length === 0 || out.length >= total) break;
+  }
+  return out;
+}
+
+/** True if a push of these items will need the library series list. */
+/**
+ * Fetch the library's series once per push, only when preserve_series is OFF
+ * and some item actually needs a name matched. Failure falls back to [] (name
+ * only; ABS still dedups exact case-insensitive names).
+ */
+async function loadLibrarySeriesForPush(config, items) {
+  if (config.preserve_series !== false) return [];
+  if (!config.abs_library_id || !needsLibrarySeries(items)) return [];
+  try {
+    return await fetchLibrarySeries(config.abs_base_url, config.abs_api_token, config.abs_library_id);
+  } catch (err) {
+    console.warn('[series] Could not fetch library series; sending names unmatched:', err);
+    return [];
+  }
+}
+
+function needsLibrarySeries(items) {
+  return items.some(item => {
+    const meta = item.metadata || item;
+    return !(meta.all_series && meta.all_series.length > 0) && !!meta.series;
+  });
+}
+
 /**
  * Build ABS-formatted PATCH payload from internal metadata.
  * Matches src-tauri/src/commands/abs.rs build_update_payload():
  * - Authors: split on , and & → [{id: "new-N", name}]
  * - Narrators: wrapped as array
- * - Series: [{name, sequence}] with NO id field (ABS matches by name)
  * - Genres: enforced (max 3, validated)
  * - Tags: at TOP LEVEL, DNA-aware enforcement
+ *
+ * Series (#2): ABS creates a new series for any name it doesn't know exactly
+ * and REMOVES any series missing from the array, so:
+ * - preserve_series ON (default): the `series` key is omitted entirely.
+ * - preserve_series OFF: existing all_series is sent unchanged; a book with no
+ *   existing series gets its (AI/user) series name, reusing the library's
+ *   existing series {id, name} when a normalized name matches.
+ * - `series: []` is never sent (CR-4a) — no info means omit the key.
+ *
+ * @param {object} meta
+ * @param {object} [opts]
+ * @param {boolean} [opts.preserveSeries] defaults to config.preserve_series !== false
+ * @param {Array<{id,name}>} [opts.librarySeries] existing series in the library
  */
-function buildAbsPayload(meta) {
+export function buildAbsPayload(meta, opts = {}) {
+  const config = getLocalConfig();
+  const preserveSeries = opts.preserveSeries ?? (config.preserve_series !== false);
   const metadata = {};
 
   if (meta.title) metadata.title = meta.title;
@@ -185,26 +273,31 @@ function buildAbsPayload(meta) {
 
   // Genres: enforce policy (max 3, validated against approved list) if enabled
   if (meta.genres && meta.genres.length > 0) {
-    const config = getLocalConfig();
     metadata.genres = config.genre_enforcement !== false
       ? enforceGenrePolicyWithSplit(meta.genres)
       : meta.genres.slice(0, 3);
   }
 
-  // Series: use all_series if available, fall back to series/sequence
-  // NO id field — let ABS match by name to avoid duplicates
-  if (meta.all_series && meta.all_series.length > 0) {
-    metadata.series = meta.all_series.map(s => {
-      const obj = { name: s.name };
-      if (s.sequence != null) obj.sequence = String(s.sequence);
-      return obj;
-    });
-  } else if (meta.series) {
-    const obj = { name: meta.series };
-    if (meta.sequence != null) obj.sequence = String(meta.sequence);
-    metadata.series = [obj];
-  } else {
-    metadata.series = [];
+  const hasSeq = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+  if (!preserveSeries) {
+    if (meta.all_series && meta.all_series.length > 0) {
+      // Book already has series in ABS: send them back unchanged.
+      const list = meta.all_series.filter(s => s && s.name).map(s => {
+        const obj = {};
+        if (s.id) obj.id = s.id;
+        obj.name = s.name;
+        if (hasSeq(s.sequence)) obj.sequence = String(s.sequence);
+        return obj;
+      });
+      if (list.length > 0) metadata.series = list;
+    } else if (meta.series && String(meta.series).trim()) {
+      // Book has no series yet: fill it, reusing an existing library series.
+      const match = findLibrarySeries(meta.series, opts.librarySeries);
+      const obj = match ? { id: match.id, name: match.name } : { name: String(meta.series).trim() };
+      if (hasSeq(meta.sequence)) obj.sequence = String(meta.sequence);
+      metadata.series = [obj];
+    }
+    // else: no series info — omit the key (never send [], it wipes series).
   }
 
   // Tags: TOP LEVEL (not inside metadata), DNA-aware enforcement
@@ -270,12 +363,14 @@ const HANDLERS = {
     let success = 0, failed = 0;
     const errors = [];
 
+    const librarySeries = await loadLibrarySeriesForPush(config, items);
+
     for (const item of items) {
       try {
         const absId = item.abs_id || item.id;
         if (!absId) { failed++; errors.push({ id: 'unknown', error: 'Missing item ID' }); continue; }
         const meta = item.metadata || item;
-        const payload = buildAbsPayload(meta);
+        const payload = buildAbsPayload(meta, { librarySeries });
         await absApi(baseUrl, token, `/api/items/${absId}/media`, {
           method: 'PATCH',
           body: payload,
@@ -297,12 +392,14 @@ const HANDLERS = {
     let updated = 0, failed = 0;
     const errors = [];
 
+    const librarySeries = await loadLibrarySeriesForPush(config, items);
+
     for (const item of items) {
       try {
         const absId = item.id || item.abs_id;
         if (!absId) { failed++; errors.push('Missing item ID'); continue; }
         const meta = item.metadata || {};
-        const payload = buildAbsPayload(meta);
+        const payload = buildAbsPayload(meta, { librarySeries });
         await absApi(baseUrl, token, `/api/items/${absId}/media`, {
           method: 'PATCH',
           body: payload,
@@ -426,13 +523,17 @@ const HANDLERS = {
         const title = parsed.title || book.current_title;
         const author = parsed.author || book.current_author;
         const subtitle = parsed.subtitle || null;
-        const series = parsed.series !== undefined ? parsed.series : null;
-        const sequence = parsed.sequence !== undefined ? parsed.sequence : null;
+        // CR-4b: a missing/null series or sequence from the AI falls back to the
+        // book's current value — an AI response can never clear a series.
+        // #2: with preserve_series ON the AI never changes series/sequence.
+        const preserveSeries = config.preserve_series !== false;
+        const series = (!preserveSeries && hasValue(parsed.series)) ? parsed.series : (book.current_series ?? null);
+        const sequence = (!preserveSeries && hasValue(parsed.sequence)) ? parsed.sequence : (book.current_sequence ?? null);
         const narrator = parsed.narrator || null;
         const changed = title !== book.current_title || author !== book.current_author
           || subtitle !== (book.current_subtitle || null)
-          || series !== (book.current_series || null)
-          || sequence !== (book.current_sequence || null);
+          || (series ?? '') !== (book.current_series ?? '')
+          || String(sequence ?? '') !== String(book.current_sequence ?? '');
         return { id: book.id, title, author, subtitle, series, sequence, narrator, confidence: parsed.confidence || 75, changed };
       } catch (err) {
         return { id: book.id, error: err.message, changed: false };
@@ -459,8 +560,9 @@ const HANDLERS = {
       title: parsed.title || input.current_title,
       author: parsed.author || input.current_author,
       subtitle: parsed.subtitle || null,
-      series: parsed.series || null,
-      sequence: parsed.sequence || null,
+      // CR-4b / #2: never clear a series; never change it when preserve_series is ON.
+      series: (config.preserve_series === false && hasValue(parsed.series)) ? parsed.series : (input.current_series ?? null),
+      sequence: (config.preserve_series === false && hasValue(parsed.sequence)) ? parsed.sequence : (input.current_sequence ?? null),
       narrator: parsed.narrator || null,
       confidence: parsed.confidence || 75,
       notes: parsed.notes || null,

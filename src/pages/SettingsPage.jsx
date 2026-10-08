@@ -543,6 +543,12 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
                   label="Enforce approved genres"
                 />
                 <p className="text-sm text-gray-400">When enabled, AI genre suggestions are filtered to the approved list only. Disable to allow free-form genres.</p>
+                <Toggle
+                  checked={localConfig.preserve_series !== false}
+                  onChange={(v) => setLocalConfig({ ...localConfig, preserve_series: v })}
+                  label="Preserve existing series"
+                />
+                <p className="text-sm text-gray-400">When enabled (recommended), series name and number are never changed — AI resolution leaves them alone and pushes to ABS don't send series. When disabled, series are only filled in for books that have none, reusing a matching series already in your library instead of creating a new one.</p>
               </div>
             </div>
 

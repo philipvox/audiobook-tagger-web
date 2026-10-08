@@ -1,8 +1,11 @@
 import { useState, useMemo } from 'react';
 import { X, UploadCloud, AlertTriangle, CheckCircle, BookOpen, User, Mic2, Tag, Image } from 'lucide-react';
+import { getLocalConfig } from '../api';
 
 export function ABSPushModal({ isOpen, onClose, onConfirm, groups, pushing }) {
   const [confirmText, setConfirmText] = useState('');
+  // #2: series are only sent to ABS when the user has turned preservation off.
+  const preserveSeries = getLocalConfig().preserve_series !== false;
 
   // Calculate summary of changes
   const summary = useMemo(() => {
@@ -167,7 +170,12 @@ export function ABSPushModal({ isOpen, onClose, onConfirm, groups, pushing }) {
               <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
               <div className="text-sm text-amber-300">
                 <p><strong className="text-amber-200">This overwrites metadata on your ABS server.</strong></p>
-                <p className="mt-1 text-amber-400">Genres, tags, descriptions, series, and other fields will be replaced with what you see in the tagger. This cannot be undone from this app. Back up your ABS database if unsure.</p>
+                <p className="mt-1 text-amber-400">Genres, tags, descriptions, and other fields will be replaced with what you see in the tagger. This cannot be undone from this app. Back up your ABS database if unsure.</p>
+                <p className="mt-1 text-amber-400">
+                  {preserveSeries
+                    ? 'Series are preserved: series names and numbers in ABS will not be changed (turn off "Preserve existing series" in Settings to change this).'
+                    : 'Series: books that already have a series in ABS keep it; books with none get the tagger\'s series, matched to an existing series in your library when possible.'}
+                </p>
               </div>
             </div>
           </div>
