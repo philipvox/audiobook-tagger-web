@@ -454,6 +454,15 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
                     />
                   </div>
                   <div>
+                    <Input
+                      label="OpenAI API Base URL"
+                      value={localConfig.openai_base_url ?? 'https://api.openai.com'}
+                      onChange={(v) => setLocalConfig({ ...localConfig, openai_base_url: v })}
+                      placeholder="https://api.openai.com"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Override to use an internal LLM proxy that exposes the OpenAI API.</p>
+                  </div>
+                  <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <label className="text-sm text-gray-400">Anthropic (Claude) API Key</label>
                       <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300">Get a key →</a>
@@ -465,6 +474,15 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
                       placeholder="sk-ant-..."
                     />
                   </div>
+                  <div>
+                    <Input
+                      label="Anthropic API Base URL"
+                      value={localConfig.anthropic_base_url ?? 'https://api.anthropic.com'}
+                      onChange={(v) => setLocalConfig({ ...localConfig, anthropic_base_url: v })}
+                      placeholder="https://api.anthropic.com"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Override to use an internal LLM proxy that exposes the Anthropic API.</p>
+                  </div>
                   <div className="text-xs text-amber-500/70 mt-1 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
                     <span>API keys are stored in your browser's local storage. Do not use this on shared computers.</span>
@@ -472,37 +490,97 @@ export function SettingsPage({ activeTab, navigateTo, logoSvg, onOpenWizard }) {
                   <p className="text-sm text-gray-400">Enter one or both. The model you select below determines which key is used.</p>
                   <div>
                     <label className="block text-sm text-gray-400 mb-1.5">AI Model</label>
-                    <select
-                      value={localConfig.ai_model || 'gpt-5-nano'}
-                      onChange={(e) => {
-                          const model = AI_MODELS.find(m => m.id === e.target.value);
-                          const isAnthropic = model?.provider === 'anthropic';
-                          setLocalConfig({
-                            ...localConfig,
-                            ai_model: e.target.value,
-                            ai_base_url: isAnthropic ? 'https://api.anthropic.com' : 'https://api.openai.com',
-                          });
-                      }}
-                      className="w-full px-4 py-3 bg-neutral-800 border border-neutral-700 rounded-lg text-base text-white focus:outline-none cursor-pointer"
-                    >
-                      <optgroup label="OpenAI">
-                        {AI_MODELS.filter(m => m.provider === 'openai').map(m => {
-                          const libCost = libraryBookCount > 0 ? estimateCost(m, libraryBookCount) * 3 : null;
-                          const costStr = libCost != null ? ` — Run All: ${formatCost(libCost)}` : '';
-                          return <option key={m.id} value={m.id}>{m.label}{costStr}</option>;
-                        })}
-                      </optgroup>
-                      <optgroup label="Anthropic Claude">
-                        {AI_MODELS.filter(m => m.provider === 'anthropic').map(m => {
-                          const libCost = libraryBookCount > 0 ? estimateCost(m, libraryBookCount) * 3 : null;
-                          const costStr = libCost != null ? ` — Run All: ${formatCost(libCost)}` : '';
-                          return <option key={m.id} value={m.id}>{m.label}{costStr}</option>;
-                        })}
-                      </optgroup>
-                    </select>
                     {(() => {
-                      const m = AI_MODELS.find(m => m.id === (localConfig.ai_model || 'gpt-5-nano'));
-                      if (!m) return null;
+                      const knownModel = AI_MODELS.find(m => m.id === localConfig.ai_model);
+                      const selectValue = knownModel ? localConfig.ai_model : '__custom__';
+                      return (
+                        <select
+                          value={selectValue}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v === '__custom__') {
+                              // Switch to Custom: keep existing custom name if any, else clear.
+                              setLocalConfig({
+                                ...localConfig,
+                                ai_model: knownModel ? '' : (localConfig.ai_model || ''),
+                                ai_provider: localConfig.ai_provider || 'openai',
+                              });
+                            } else {
+                              const model = AI_MODELS.find(m => m.id === v);
+                              setLocalConfig({
+                                ...localConfig,
+                                ai_model: v,
+                                ai_provider: model?.provider || 'openai',
+                              });
+                            }
+                          }}
+                          className="w-full px-4 py-3 bg-neutral-800 border border-neutral-700 rounded-lg text-base text-white focus:outline-none cursor-pointer"
+                        >
+                          <optgroup label="OpenAI">
+                            {AI_MODELS.filter(m => m.provider === 'openai').map(m => {
+                              const libCost = libraryBookCount > 0 ? estimateCost(m, libraryBookCount) * 3 : null;
+                              const costStr = libCost != null ? ` — Run All: ${formatCost(libCost)}` : '';
+                              return <option key={m.id} value={m.id}>{m.label}{costStr}</option>;
+                            })}
+                          </optgroup>
+                          <optgroup label="Anthropic Claude">
+                            {AI_MODELS.filter(m => m.provider === 'anthropic').map(m => {
+                              const libCost = libraryBookCount > 0 ? estimateCost(m, libraryBookCount) * 3 : null;
+                              const costStr = libCost != null ? ` — Run All: ${formatCost(libCost)}` : '';
+                              return <option key={m.id} value={m.id}>{m.label}{costStr}</option>;
+                            })}
+                          </optgroup>
+                          <option value="__custom__">Custom…</option>
+                        </select>
+                      );
+                    })()}
+                    {(() => {
+                      const knownModel = AI_MODELS.find(m => m.id === localConfig.ai_model);
+                      if (knownModel) return null;
+                      const provider = localConfig.ai_provider || 'openai';
+                      return (
+                        <div className="mt-3 space-y-3 bg-neutral-800/40 rounded-lg p-3 border border-neutral-800">
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1.5">Provider</label>
+                            <div className="flex gap-2">
+                              {[
+                                { id: 'openai', label: 'OpenAI' },
+                                { id: 'anthropic', label: 'Anthropic Claude' },
+                              ].map(p => (
+                                <button
+                                  key={p.id}
+                                  type="button"
+                                  onClick={() => setLocalConfig({ ...localConfig, ai_provider: p.id })}
+                                  className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                                    provider === p.id
+                                      ? 'bg-blue-600 text-white'
+                                      : 'bg-neutral-900 text-gray-400 hover:text-white border border-neutral-800'
+                                  }`}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <Input
+                            label="Custom Model Name"
+                            value={localConfig.ai_model}
+                            onChange={(v) => setLocalConfig({ ...localConfig, ai_model: v })}
+                            placeholder={provider === 'anthropic' ? 'claude-...' : 'gpt-...'}
+                          />
+                          <p className="text-xs text-gray-500">The exact model identifier the selected provider expects.</p>
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const m = AI_MODELS.find(m => m.id === localConfig.ai_model);
+                      if (!m) {
+                        return (
+                          <div className="mt-3 text-sm text-gray-500">
+                            Custom model — pricing not estimated.
+                          </div>
+                        );
+                      }
                       const perBook = estimateCost(m, 1);
                       const libSize = libraryBookCount;
                       const runAllPerBook = estimateCost(m, 1) * 3; // 3 AI calls per book

@@ -11,7 +11,10 @@
 FROM node:20-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts works around rollup 4.53.0 publishing a leaked
+# `postinstall: patch-package` script. The app's runtime deps don't need
+# install hooks (binaries come via optionalDependencies).
+RUN npm ci --ignore-scripts
 COPY src/ src/
 COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
 RUN npm run build

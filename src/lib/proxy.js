@@ -211,10 +211,14 @@ export async function callOpenAI(apiKey, model, systemPrompt, userPrompt, maxTok
  * @param {string} userPrompt - User message
  * @param {number} maxTokens - Max output tokens
  */
-export async function callAnthropic(apiKey, model, systemPrompt, userPrompt, maxTokens = 2000) {
-  // Route through Caddy proxy to avoid CORS
-  const useLocalProxy = typeof window !== 'undefined';
-  const endpoint = useLocalProxy ? '/api/anthropic/v1/messages' : 'https://api.anthropic.com/v1/messages';
+export async function callAnthropic(apiKey, model, systemPrompt, userPrompt, maxTokens = 2000, baseUrl = 'https://api.anthropic.com') {
+  // Route through Caddy local proxy only when hitting the official Anthropic URL.
+  // Custom base URLs (in-house LLM proxies) go direct via proxyFetch with CORS fallback.
+  const isOfficial = baseUrl === 'https://api.anthropic.com';
+  const useLocalProxy = typeof window !== 'undefined' && isOfficial;
+  const endpoint = useLocalProxy
+    ? '/api/anthropic/v1/messages'
+    : `${baseUrl.replace(/\/$/, '')}/v1/messages`;
   const fetchFn = useLocalProxy ? fetchWithTimeout : proxyFetch;
 
   const res = await fetchFn(endpoint, {
@@ -253,16 +257,19 @@ export async function callAnthropic(apiKey, model, systemPrompt, userPrompt, max
  */
 export async function callAI(config, systemPrompt, userPrompt, maxTokens = 2000) {
   const model = config.ai_model || 'gpt-5-nano';
-  const isAnthropic = model.startsWith('claude');
+  // Explicit provider takes precedence; fall back to model-name heuristic for legacy configs.
+  const provider = config.ai_provider
+    || (model.startsWith('claude') ? 'anthropic' : 'openai');
 
-  if (isAnthropic) {
+  if (provider === 'anthropic') {
     const key = config.anthropic_api_key;
     if (!key) throw new Error('No Anthropic API key configured. Add one in Settings.');
-    return callAnthropic(key, model, systemPrompt, userPrompt, maxTokens);
+    const baseUrl = config.anthropic_base_url || 'https://api.anthropic.com';
+    return callAnthropic(key, model, systemPrompt, userPrompt, maxTokens, baseUrl);
   } else {
     const key = config.openai_api_key;
     if (!key) throw new Error('No OpenAI API key configured. Add one in Settings.');
-    const baseUrl = config.ai_base_url || 'https://api.openai.com';
+    const baseUrl = config.openai_base_url || config.ai_base_url || 'https://api.openai.com';
     return callOpenAI(key, model, systemPrompt, userPrompt, maxTokens, baseUrl);
   }
 }

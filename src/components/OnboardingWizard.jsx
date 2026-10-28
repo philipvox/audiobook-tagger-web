@@ -302,6 +302,12 @@ export function SetupWizard({ onClose }) {
                 link={{ url: 'https://platform.openai.com/api-keys', text: 'Get a key' }}
               />
               <WizardInput
+                label="OpenAI API Base URL"
+                value={localConfig.openai_base_url ?? 'https://api.openai.com'}
+                onChange={(v) => setLocalConfig({ ...localConfig, openai_base_url: v })}
+                placeholder="https://api.openai.com"
+              />
+              <WizardInput
                 label="Anthropic (Claude) API Key"
                 type="password"
                 value={localConfig.anthropic_api_key}
@@ -309,24 +315,84 @@ export function SetupWizard({ onClose }) {
                 placeholder="sk-ant-..."
                 link={{ url: 'https://console.anthropic.com/settings/keys', text: 'Get a key' }}
               />
+              <WizardInput
+                label="Anthropic API Base URL"
+                value={localConfig.anthropic_base_url ?? 'https://api.anthropic.com'}
+                onChange={(v) => setLocalConfig({ ...localConfig, anthropic_base_url: v })}
+                placeholder="https://api.anthropic.com"
+              />
+              <p className="text-xs text-gray-500 -mt-1">Override either base URL to route through an internal LLM proxy.</p>
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">AI Model</label>
-                <select
-                  value={localConfig.ai_model || 'gpt-5-nano'}
-                  onChange={(e) => {
-                    const model = AI_MODELS.find(m => m.id === e.target.value);
-                    setLocalConfig({
-                      ...localConfig,
-                      ai_model: e.target.value,
-                      ai_base_url: model?.provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com',
-                    });
-                  }}
-                  className="w-full px-3 py-2.5 bg-neutral-800 border border-neutral-700 rounded-lg text-sm text-white focus:outline-none cursor-pointer"
-                >
-                  {AI_MODELS.map(m => (
-                    <option key={m.id} value={m.id}>{m.label} ({m.cost})</option>
-                  ))}
-                </select>
+                {(() => {
+                  const knownModel = AI_MODELS.find(m => m.id === localConfig.ai_model);
+                  const selectValue = knownModel ? localConfig.ai_model : '__custom__';
+                  return (
+                    <select
+                      value={selectValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === '__custom__') {
+                          setLocalConfig({
+                            ...localConfig,
+                            ai_model: knownModel ? '' : (localConfig.ai_model || ''),
+                            ai_provider: localConfig.ai_provider || 'openai',
+                          });
+                        } else {
+                          const model = AI_MODELS.find(m => m.id === v);
+                          setLocalConfig({
+                            ...localConfig,
+                            ai_model: v,
+                            ai_provider: model?.provider || 'openai',
+                          });
+                        }
+                      }}
+                      className="w-full px-3 py-2.5 bg-neutral-800 border border-neutral-700 rounded-lg text-sm text-white focus:outline-none cursor-pointer"
+                    >
+                      {AI_MODELS.map(m => (
+                        <option key={m.id} value={m.id}>{m.label} ({m.cost})</option>
+                      ))}
+                      <option value="__custom__">Custom…</option>
+                    </select>
+                  );
+                })()}
+                {(() => {
+                  const knownModel = AI_MODELS.find(m => m.id === localConfig.ai_model);
+                  if (knownModel) return null;
+                  const provider = localConfig.ai_provider || 'openai';
+                  return (
+                    <div className="mt-2 space-y-2 bg-neutral-800/40 rounded-lg p-3 border border-neutral-800">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1.5">Provider</label>
+                        <div className="flex gap-2">
+                          {[
+                            { id: 'openai', label: 'OpenAI' },
+                            { id: 'anthropic', label: 'Anthropic Claude' },
+                          ].map(p => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => setLocalConfig({ ...localConfig, ai_provider: p.id })}
+                              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                                provider === p.id
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-neutral-900 text-gray-400 hover:text-white border border-neutral-800'
+                              }`}
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <WizardInput
+                        label="Custom Model Name"
+                        value={localConfig.ai_model}
+                        onChange={(v) => setLocalConfig({ ...localConfig, ai_model: v })}
+                        placeholder={provider === 'anthropic' ? 'claude-...' : 'gpt-...'}
+                      />
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}

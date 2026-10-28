@@ -48,8 +48,10 @@ const DEFAULT_CONFIG = {
   // series for every name it doesn't already know.
   preserve_series: true,
   performance_preset: 'balanced',
+  ai_provider: 'openai',
   ai_model: 'gpt-5-nano',
-  ai_base_url: 'https://api.openai.com',
+  openai_base_url: 'https://api.openai.com',
+  anthropic_base_url: 'https://api.anthropic.com',
   use_local_ai: false,
   ollama_model: null,
   custom_providers: [],
@@ -58,7 +60,14 @@ const DEFAULT_CONFIG = {
 export function getLocalConfig() {
   try {
     const stored = localStorage.getItem(CONFIG_KEY);
-    if (stored) return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Migrate legacy ai_base_url → openai_base_url
+      if (parsed.ai_base_url && !parsed.openai_base_url) {
+        parsed.openai_base_url = parsed.ai_base_url;
+      }
+      return { ...DEFAULT_CONFIG, ...parsed };
+    }
   } catch (e) {
     console.warn('Failed to load config:', e);
   }
