@@ -1,43 +1,51 @@
 // src/hooks/useScan.test.js
-// Tests for the useScan hook
+// Tests for the useScan hook against the REAL web api.js handlers (only the
+// network layer, lib/proxy, is mocked). Local-folder scanning, folder import
+// and file rescans are desktop-only: in the web build callBackend throws
+// NotAvailableInWebError for them, so the Tauri-era tests that asserted
+// successful scans were replaced by tests that the error surfaces and no
+// state is clobbered.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
-import { useScan } from './useScan';
+import { renderHook, act } from '@testing-library/react';
 
-// Mock the AppContext
 const mockSetGroups = vi.fn();
 vi.mock('../context/AppContext', () => ({
-  useApp: () => ({
-    setGroups: mockSetGroups,
-  }),
+  useApp: () => ({ setGroups: mockSetGroups }),
 }));
 
-// Mock Tauri APIs
-const mockInvoke = vi.fn();
-const mockListen = vi.fn(() => Promise.resolve(() => {}));
-const mockOpen = vi.fn();
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, callBackend: vi.fn(actual.callBackend), pickPath: vi.fn() };
+});
+vi.mock('../lib/proxy', () => ({ absApi: vi.fn(), callAI: vi.fn(), parseAIJson: (s) => JSON.parse(s), proxyFetch: vi.fn() }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args) => mockInvoke(...args),
-}));
+import { callBackend, pickPath, NotAvailableInWebError } from '../api';
+import { absApi, callAI } from '../lib/proxy';
+import { clearImportSnapshots, recordImportSnapshot } from '../lib/absImport';
+import { useScan } from './useScan';
 
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (...args) => mockListen(...args),
-}));
+const CONFIG_KEY = 'audiobook_tagger_config';
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: (...args) => mockOpen(...args),
-}));
+/** Apply the last functional setGroups update to `prev`. */
+const applyLastSetGroups = (prev) => {
+  const arg = mockSetGroups.mock.calls.at(-1)[0];
+  return typeof arg === 'function' ? arg(prev) : arg;
+};
 
 describe('useScan hook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    localStorage.clear();
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({ abs_base_url: 'https://abs.example', abs_api_token: 't', abs_library_id: 'lib1' }));
+    clearImportSnapshots();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   describe('initial state', () => {
@@ -97,334 +105,146 @@ describe('useScan hook', () => {
     });
   });
 
-  describe('handleScan', () => {
-    it('should not start scan if no folder selected', async () => {
-      mockOpen.mockResolvedValue(null);
 
+  describe('handleScan / handleImport (desktop-only in web)', () => {
+    it('does nothing if no folder is picked', async () => {
+      vi.mocked(pickPath).mockResolvedValue(null);
       const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleScan();
-      });
-
-      expect(mockInvoke).not.toHaveBeenCalledWith('scan_library', expect.anything());
+      await act(async () => { await result.current.handleScan(); });
+      expect(callBackend).not.toHaveBeenCalledWith('scan_library', expect.anything());
       expect(result.current.scanning).toBe(false);
     });
 
-    it('should start scan when folder selected', async () => {
-      mockOpen.mockResolvedValue('/test/path');
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.resolve({ groups: [] });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
+    it('handleScan rejects with NotAvailableInWebError and resets scanning', async () => {
+      vi.mocked(pickPath).mockResolvedValue(['/books']);
       const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleScan();
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('scan_library', expect.objectContaining({
-        paths: ['/test/path'],
-        scanMode: 'normal',
-      }));
-    });
-
-    it('should handle multiple folders', async () => {
-      mockOpen.mockResolvedValue(['/path1', '/path2']);
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.resolve({ groups: [] });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
-      const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleScan();
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('scan_library', expect.objectContaining({
-        paths: ['/path1', '/path2'],
-      }));
-    });
-
-    it('should update groups on successful scan', async () => {
-      const mockGroups = [
-        { id: '1', group_name: 'Test Book', files: [], metadata: {} },
-      ];
-      mockOpen.mockResolvedValue('/test/path');
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.resolve({ groups: mockGroups });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
-      const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleScan();
-      });
-
-      expect(mockSetGroups).toHaveBeenCalledWith(mockGroups);
-    });
-
-    it('should handle scan mode parameter', async () => {
-      mockOpen.mockResolvedValue('/test/path');
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.resolve({ groups: [] });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
-      const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleScan('force_fresh');
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('scan_library', expect.objectContaining({
-        scanMode: 'force_fresh',
-      }));
-    });
-
-    it('should handle scan errors', async () => {
-      mockOpen.mockResolvedValue('/test/path');
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.reject(new Error('Scan failed'));
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
-      const { result } = renderHook(() => useScan());
-
-      await expect(async () => {
-        await act(async () => {
-          await result.current.handleScan();
-        });
-      }).rejects.toThrow('Scan failed');
-
+      let err;
+      await act(async () => { await result.current.handleScan().catch(e => { err = e; }); });
+      expect(err).toBeInstanceOf(NotAvailableInWebError);
       expect(result.current.scanning).toBe(false);
-    });
-  });
-
-  describe('handleImport', () => {
-    it('should not import if no folder selected', async () => {
-      mockOpen.mockResolvedValue(null);
-
-      const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleImport();
-      });
-
-      expect(mockInvoke).not.toHaveBeenCalledWith('import_folders', expect.anything());
+      expect(mockSetGroups).not.toHaveBeenCalled();
     });
 
-    it('should call import_folders when folder selected', async () => {
-      mockOpen.mockResolvedValue('/test/path');
-      mockInvoke.mockResolvedValue({ groups: [] });
-
+    it('handleImport rejects with NotAvailableInWebError', async () => {
+      vi.mocked(pickPath).mockResolvedValue('/books');
       const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleImport();
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('import_folders', { paths: ['/test/path'] });
+      let err;
+      await act(async () => { await result.current.handleImport().catch(e => { err = e; }); });
+      expect(err).toBeInstanceOf(NotAvailableInWebError);
+      expect(mockSetGroups).not.toHaveBeenCalled();
     });
   });
 
   describe('handleRescan', () => {
     it('should return early if no files selected', async () => {
       const { result } = renderHook(() => useScan());
-
-      const returnValue = await act(async () => {
-        return await result.current.handleRescan(new Set(), []);
-      });
-
-      expect(returnValue).toEqual({ success: false, count: 0 });
+      let res;
+      await act(async () => { res = await result.current.handleRescan(new Set(), []); });
+      expect(res).toEqual({ success: false, count: 0 });
     });
 
-    it('should extract paths from selected files', async () => {
-      const selectedFiles = new Set(['file1']);
-      const groups = [{
-        files: [{ id: 'file1', path: '/test/folder/file1.m4b' }],
-      }];
-
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'scan_library') {
-          return Promise.resolve({ groups: [] });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
+    it('does not report success or drop the selected books when the rescan fails', async () => {
+      const groups = [{ id: 'g1', files: [{ id: 'f1', path: '/books/A/a.m4b' }], metadata: {} }];
       const { result } = renderHook(() => useScan());
-
+      let err;
       await act(async () => {
-        await result.current.handleRescan(selectedFiles, groups);
+        await result.current.handleRescan(new Set(['f1']), groups).catch(e => { err = e; });
       });
-
-      expect(mockInvoke).toHaveBeenCalledWith('scan_library', expect.objectContaining({
-        paths: ['/test/folder'],
-      }));
-    });
-
-    it('should call rescan_fields for selective refresh', async () => {
-      const selectedFiles = new Set(['file1']);
-      const groups = [{
-        files: [{ id: 'file1', path: '/test/folder/file1.m4b' }],
-      }];
-      const selectiveFields = ['description', 'genres'];
-
-      mockInvoke.mockImplementation((cmd) => {
-        if (cmd === 'rescan_fields') {
-          return Promise.resolve({ groups: [] });
-        }
-        if (cmd === 'get_scan_progress') {
-          return Promise.resolve({ current: 0, total: 0 });
-        }
-        return Promise.resolve();
-      });
-
-      const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.handleRescan(selectedFiles, groups, 'selective_refresh', selectiveFields);
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('rescan_fields', expect.objectContaining({
-        fields: selectiveFields,
-      }));
+      expect(err).toBeInstanceOf(NotAvailableInWebError);
+      expect(mockSetGroups).not.toHaveBeenCalled();
+      expect(result.current.scanning).toBe(false);
     });
   });
 
   describe('handleImportFromAbs', () => {
-    it('should call import_from_abs', async () => {
-      mockListen.mockResolvedValue(() => {});
-      mockInvoke.mockResolvedValue({ groups: [], total_imported: 5 });
-
-      const { result } = renderHook(() => useScan());
-
-      const returnValue = await act(async () => {
-        return await result.current.handleImportFromAbs();
+    it('imports from ABS via the web handler and sets groups (series parsed)', async () => {
+      vi.mocked(absApi).mockResolvedValueOnce({
+        results: [{ id: 'b1', media: { metadata: { title: 'Light Bringer', authorName: 'Pierce Brown', seriesName: 'Red Rising #6' }, tags: ['dna:pacing:fast'] } }],
+        total: 1,
       });
+      const { result } = renderHook(() => useScan());
+      let res;
+      await act(async () => { res = await result.current.handleImportFromAbs(); });
 
-      expect(mockInvoke).toHaveBeenCalledWith('import_from_abs', { request: null });
-      expect(returnValue.success).toBe(true);
-      expect(returnValue.count).toBe(5);
+      expect(res).toEqual({ success: true, count: 1 });
+      const groups = mockSetGroups.mock.calls[0][0];
+      expect(groups[0]).toMatchObject({ id: 'b1', abs_id: 'b1' });
+      expect(groups[0].metadata).toMatchObject({ series: 'Red Rising', sequence: '6', tags: ['dna:pacing:fast'] });
     });
 
-    it('should pass enrich option when provided', async () => {
-      mockListen.mockResolvedValue(() => {});
-      mockInvoke.mockResolvedValue({ groups: [], total_imported: 10 });
-
+    it('propagates ABS errors', async () => {
+      vi.mocked(absApi).mockRejectedValueOnce(new Error('ABS API error 401: nope'));
       const { result } = renderHook(() => useScan());
+      let err;
+      await act(async () => { await result.current.handleImportFromAbs().catch(e => { err = e; }); });
+      expect(err.message).toContain('401');
+      expect(result.current.scanning).toBe(false);
+    });
+  });
 
+  describe('handlePushAbsImports', () => {
+    const meta = { title: 'T', author: 'A', tags: ['dna:pacing:fast', 'favorites'], genres: ['Fantasy'] };
+
+    it('returns success:false with counts and errors when any item failed', async () => {
+      recordImportSnapshot('b1', meta);
+      recordImportSnapshot('b2', meta);
+      vi.mocked(absApi)
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error('ABS API error 500: boom'));
+      const { result } = renderHook(() => useScan());
+      let res;
       await act(async () => {
-        await result.current.handleImportFromAbs({ enrichWithCustomProviders: true });
+        res = await result.current.handlePushAbsImports([
+          { id: 'b1', metadata: { ...meta, title: 'T1' } },
+          { id: 'b2', metadata: { ...meta, title: 'T2' } },
+        ]);
       });
+      expect(res).toMatchObject({ success: false, updated: 1, failed: 1 });
+      expect(res.errors[0]).toContain('boom');
+    });
 
-      expect(mockInvoke).toHaveBeenCalledWith('import_from_abs', {
-        request: { enrich_with_custom_providers: true }
+    it('only sends changed fields (title edit does not touch tags/genres)', async () => {
+      recordImportSnapshot('b1', meta);
+      vi.mocked(absApi).mockResolvedValue({});
+      const { result } = renderHook(() => useScan());
+      let res;
+      await act(async () => {
+        res = await result.current.handlePushAbsImports([{ id: 'b1', metadata: { ...meta, title: 'New' } }]);
       });
+      expect(res).toMatchObject({ success: true, updated: 1, failed: 0 });
+      expect(vi.mocked(absApi).mock.calls[0][3].body).toEqual({ metadata: { title: 'New' } });
     });
   });
 
   describe('cancelScan', () => {
     it('should call cancel_scan and reset state', async () => {
-      mockInvoke.mockResolvedValue(undefined);
-
       const { result } = renderHook(() => useScan());
-
-      await act(async () => {
-        await result.current.cancelScan();
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('cancel_scan');
+      await act(async () => { await result.current.cancelScan(); });
+      expect(callBackend).toHaveBeenCalledWith('cancel_scan');
       expect(result.current.scanning).toBe(false);
-      expect(result.current.scanProgress.current).toBe(0);
-    });
-
-    it('should handle cancel errors gracefully', async () => {
-      mockInvoke.mockRejectedValue(new Error('Cancel failed'));
-
-      const { result } = renderHook(() => useScan());
-
-      // Should not throw
-      await act(async () => {
-        await result.current.cancelScan();
-      });
     });
   });
 
   describe('handlePipelineRescan', () => {
     it('should return early if no groups selected', async () => {
       const { result } = renderHook(() => useScan());
-
-      const returnValue = await act(async () => {
-        return await result.current.handlePipelineRescan([]);
-      });
-
-      expect(returnValue).toEqual({ success: false, count: 0 });
+      let res;
+      await act(async () => { res = await result.current.handlePipelineRescan([]); });
+      expect(res).toEqual({ success: false, count: 0 });
     });
 
-    it('should call process_with_pipeline with correct request', async () => {
-      const selectedGroups = [{
-        id: 'book1',
-        metadata: {
-          title: 'Test Book',
-          author: 'Test Author',
-          series: 'Test Series',
-          sequence: '1',
-          genres: ['Fantasy'],
-        },
-      }];
-
-      mockListen.mockResolvedValue(() => {});
-      mockInvoke.mockResolvedValue({ processed: 1, failed: 0, books: [] });
-
+    it('merges AI tags into existing tags (dna:* and user tags kept) and keeps genres when AI returns none', async () => {
+      vi.mocked(callAI)
+        .mockResolvedValueOnce(JSON.stringify({ genres: [], tags: ['cozy', 'a'] })) // classify
+        .mockResolvedValueOnce(JSON.stringify({ pacing: 'slow' }))                 // dna
+        .mockResolvedValueOnce(JSON.stringify({ action: 'kept' }));                // description
+      const group = { id: 'b1', metadata: { title: 'T', author: 'A', genres: ['Mystery'], tags: ['dna:theme:faith', 'favorites'] } };
       const { result } = renderHook(() => useScan());
+      await act(async () => { await result.current.handlePipelineRescan([group]); });
 
-      await act(async () => {
-        await result.current.handlePipelineRescan(selectedGroups);
-      });
-
-      expect(mockInvoke).toHaveBeenCalledWith('process_with_pipeline', expect.objectContaining({
-        request: expect.objectContaining({
-          books: expect.arrayContaining([
-            expect.objectContaining({
-              abs_id: 'book1',
-              title: 'Test Book',
-              author: 'Test Author',
-            }),
-          ]),
-        }),
-      }));
+      const [updated] = applyLastSetGroups([group]);
+      expect(updated.metadata.genres).toEqual(['Mystery']);
+      expect(updated.metadata.tags).toEqual(['dna:theme:faith', 'favorites', 'cozy', 'dna:pacing:slow']);
     });
   });
 });

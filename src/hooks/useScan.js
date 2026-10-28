@@ -310,8 +310,10 @@ export function useScan() {
       try {
         // Batch all paths in a single call for better performance
         // The Rust backend handles parallel processing internally
+        // Errors propagate: swallowing them used to drop the selected books
+        // from the list and report success with nothing rescanned.
         let allNewGroups = [];
-        try {
+        {
           let result;
           const enableTranscription = options.enableTranscription ?? false;
           if (selectiveFields && selectiveFields.length > 0) {
@@ -332,8 +334,6 @@ export function useScan() {
           if (result && result.groups) {
             allNewGroups = result.groups;
           }
-        } catch (error) {
-          console.error('Failed to scan paths:', error);
         }
 
         setGroups(prevGroups => {

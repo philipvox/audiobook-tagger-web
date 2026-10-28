@@ -6,43 +6,36 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import { renderHook } from '@testing-library/react';
 import { AppProvider, useApp } from './AppContext';
 
-// Mock Tauri APIs
-const mockInvoke = vi.fn();
-const mockListen = vi.fn(() => Promise.resolve(() => {}));
+// The web build has no Tauri: AppContext talks to src/api.js, whose config
+// handlers read/write browser localStorage. Use the REAL handlers, wrapped in
+// spies so calls can be asserted.
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    callBackend: vi.fn(actual.callBackend),
+    subscribe: vi.fn(actual.subscribe),
+  };
+});
+vi.mock('../lib/proxy', () => ({ absApi: vi.fn(), callAI: vi.fn(), parseAIJson: JSON.parse, proxyFetch: vi.fn() }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args) => mockInvoke(...args),
-}));
+import { callBackend, subscribe } from '../api';
 
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (...args) => mockListen(...args),
-}));
+const CONFIG_KEY = 'audiobook_tagger_config';
 
 describe('AppContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockImplementation(async (cmd) => {
-      if (cmd === 'get_config') {
-        return {
-          abs_base_url: 'http://localhost:8000',
-          abs_api_token: 'test-token',
-          metadata_concurrency: 10,
-        };
-      }
-      return {};
-    });
+    vi.restoreAllMocks();
+    localStorage.clear();
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({
+      abs_base_url: 'http://localhost:13378',
+      abs_api_token: 'test-token',
+    }));
   });
 
   describe('AppProvider', () => {
     it('should show loading state while fetching config', async () => {
-      // Delay the config response
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_config') {
-          await new Promise(r => setTimeout(r, 100));
-          return {};
-        }
-      });
-
       render(
         <AppProvider>
           <div>Children</div>
@@ -74,7 +67,7 @@ describe('AppContext', () => {
       );
 
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith('get_config');
+        expect(callBackend).toHaveBeenCalledWith('get_config');
       });
     });
   });
@@ -135,23 +128,14 @@ describe('AppContext', () => {
       <AppProvider>{children}</AppProvider>
     );
 
-    it('should call save_config and update state', async () => {
-      mockInvoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'get_config') {
-          return { abs_base_url: 'old-url' };
-        }
-        if (cmd === 'save_config') {
-          return undefined;
-        }
-      });
-
+    it('should call save_config, persist to localStorage and update state', async () => {
       const { result } = renderHook(() => useApp(), { wrapper });
 
       await waitFor(() => {
         expect(result.current.config).not.toBe(null);
       });
 
-      const newConfig = { abs_base_url: 'new-url' };
+      const newConfig = { abs_base_url: 'https://new-url' };
 
       let saveResult;
       await act(async () => {
@@ -159,25 +143,22 @@ describe('AppContext', () => {
       });
 
       expect(saveResult.success).toBe(true);
-      expect(mockInvoke).toHaveBeenCalledWith('save_config', { config: newConfig });
+      expect(callBackend).toHaveBeenCalledWith('save_config', { config: newConfig });
+      expect(JSON.parse(localStorage.getItem(CONFIG_KEY))).toEqual(newConfig);
       expect(result.current.config).toEqual(newConfig);
     });
 
-    it('should handle save errors', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_config') {
-          return { abs_base_url: 'url' };
-        }
-        if (cmd === 'save_config') {
-          throw new Error('Save failed');
-        }
-      });
-
+    it('should handle save errors (e.g. browser storage full)', async () => {
       const { result } = renderHook(() => useApp(), { wrapper });
 
       await waitFor(() => {
         expect(result.current.config).not.toBe(null);
       });
+
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e;
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => {});
 
       let saveResult;
       await act(async () => {
@@ -185,7 +166,7 @@ describe('AppContext', () => {
       });
 
       expect(saveResult.success).toBe(false);
-      expect(saveResult.error).toContain('Save failed');
+      expect(saveResult.error).toContain('Browser storage is full');
     });
   });
 
@@ -353,7 +334,7 @@ describe('AppContext', () => {
       );
 
       await waitFor(() => {
-        expect(mockListen).toHaveBeenCalledWith('write_progress', expect.any(Function));
+        expect(subscribe).toHaveBeenCalledWith('write_progress', expect.any(Function));
       });
     });
   });

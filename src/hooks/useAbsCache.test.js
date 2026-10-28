@@ -1,95 +1,82 @@
 // src/hooks/useAbsCache.test.js
-// Tests for the useAbsCache hook
+// Tests for the useAbsCache hook against the REAL web api.js handlers.
+// The web build has no local library cache: status is "not loaded / stale",
+// list getters return empty, and per-item cache lookups are desktop-only
+// (callBackend throws NotAvailableInWebError, which the hook turns into
+// null / []). Tauri-era tests that asserted a populated cache were removed —
+// that behavior does not exist in the web build.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, callBackend: vi.fn(actual.callBackend) };
+});
+vi.mock('../lib/proxy', () => ({ absApi: vi.fn(), callAI: vi.fn(), parseAIJson: JSON.parse, proxyFetch: vi.fn() }));
+
+import { callBackend } from '../api';
 import { useAbsCache } from './useAbsCache';
-
-// Mock Tauri APIs
-const mockInvoke = vi.fn();
-const mockListen = vi.fn(() => Promise.resolve(() => {}));
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args) => mockInvoke(...args),
-}));
-
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (...args) => mockListen(...args),
-}));
 
 describe('useAbsCache hook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   describe('initial state', () => {
     it('should initialize with correct default state', async () => {
-      mockInvoke.mockResolvedValue({
-        is_loaded: false,
-        is_stale: true,
-        stats: null,
-      });
-
       const { result } = renderHook(() => useAbsCache());
 
-      // Wait for initial cache status check
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith('get_abs_cache_status');
+        expect(callBackend).toHaveBeenCalledWith('get_abs_cache_status');
       });
 
       expect(result.current.refreshing).toBe(false);
       expect(result.current.refreshProgress).toBe(null);
     });
 
-    it('should check cache status on mount', async () => {
-      mockInvoke.mockResolvedValue({
-        is_loaded: true,
-        is_stale: false,
-        stats: { total_items: 100 },
-      });
-
+    it('maps the web status fields (is_loaded / is_stale) on mount', async () => {
       const { result } = renderHook(() => useAbsCache());
 
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith('get_abs_cache_status');
+        expect(callBackend).toHaveBeenCalledWith('get_abs_cache_status');
       });
 
-      await waitFor(() => {
-        expect(result.current.cacheStatus.isLoaded).toBe(true);
-        expect(result.current.cacheStatus.isStale).toBe(false);
-      });
+      expect(result.current.cacheStatus.isLoaded).toBe(false);
+      expect(result.current.cacheStatus.isStale).toBe(true);
+      expect(result.current.cacheStatus.stats).toEqual({ total_items: 0 });
     });
   });
 
   describe('checkCacheStatus', () => {
-    it('should return cache status from backend', async () => {
-      const mockStatus = {
-        is_loaded: true,
-        is_stale: false,
-        stats: { total_items: 50 },
-      };
-      mockInvoke.mockResolvedValue(mockStatus);
-
+    it('should return cache status from the web handler', async () => {
       const { result } = renderHook(() => useAbsCache());
-
-      await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalled();
-      });
 
       let status;
       await act(async () => {
         status = await result.current.checkCacheStatus();
       });
 
-      expect(status).toEqual(mockStatus);
+      expect(status).toMatchObject({ is_loaded: false, is_stale: true });
+    });
+
+    it('accepts the legacy `stale` field', async () => {
+      vi.mocked(callBackend).mockResolvedValueOnce({ stale: false, is_loaded: true, stats: { total_items: 3 } });
+      const { result } = renderHook(() => useAbsCache());
+
+      await waitFor(() => {
+        expect(result.current.cacheStatus.isLoaded).toBe(true);
+      });
+      expect(result.current.cacheStatus.isStale).toBe(false);
     });
 
     it('should handle errors gracefully', async () => {
-      mockInvoke.mockRejectedValue(new Error('Check failed'));
-
       const { result } = renderHook(() => useAbsCache());
+      await waitFor(() => expect(callBackend).toHaveBeenCalled());
 
+      vi.mocked(callBackend).mockRejectedValueOnce(new Error('boom'));
       let status;
       await act(async () => {
         status = await result.current.checkCacheStatus();
@@ -100,118 +87,32 @@ describe('useAbsCache hook', () => {
   });
 
   describe('refreshCache', () => {
-    it('should set refreshing state during refresh', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: false, is_stale: true, stats: null };
-        }
-        if (cmd === 'refresh_abs_cache') {
-          // Delay to test loading state
-          await new Promise(r => setTimeout(r, 10));
-          return { success: true, total_items: 100 };
-        }
-      });
-      mockListen.mockResolvedValue(() => {});
-
-      const { result } = renderHook(() => useAbsCache());
-
-      let refreshPromise;
-      act(() => {
-        refreshPromise = result.current.refreshCache();
-      });
-
-      expect(result.current.refreshing).toBe(true);
-
-      await act(async () => {
-        await refreshPromise;
-      });
-
-      expect(result.current.refreshing).toBe(false);
-    });
-
-    it('should update cache status on successful refresh', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: false, is_stale: true, stats: null };
-        }
-        if (cmd === 'refresh_abs_cache') {
-          return {
-            success: true,
-            total_items: 100,
-            items_with_files: 90,
-            items_with_chapters: 80,
-          };
-        }
-      });
-      mockListen.mockResolvedValue(() => {});
-
+    it('resolves and clears the refreshing state', async () => {
       const { result } = renderHook(() => useAbsCache());
 
       await act(async () => {
         await result.current.refreshCache();
       });
 
-      expect(result.current.cacheStatus.isLoaded).toBe(true);
-      expect(result.current.cacheStatus.isStale).toBe(false);
-      expect(result.current.cacheStatus.stats.total_items).toBe(100);
+      expect(callBackend).toHaveBeenCalledWith('refresh_abs_cache');
+      expect(result.current.refreshing).toBe(false);
+      expect(result.current.refreshProgress).toBe(null);
     });
 
     it('should throw on refresh error', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: false, is_stale: true, stats: null };
-        }
-        if (cmd === 'refresh_abs_cache') {
-          throw new Error('Refresh failed');
-        }
-      });
-      mockListen.mockResolvedValue(() => {});
-
       const { result } = renderHook(() => useAbsCache());
+      await waitFor(() => expect(callBackend).toHaveBeenCalled());
+      vi.mocked(callBackend).mockRejectedValueOnce(new Error('Refresh failed'));
 
-      await expect(async () => {
-        await act(async () => {
-          await result.current.refreshCache();
-        });
-      }).rejects.toThrow('Refresh failed');
+      await expect(act(async () => {
+        await result.current.refreshCache();
+      })).rejects.toThrow('Refresh failed');
+      expect(result.current.refreshing).toBe(false);
     });
   });
 
   describe('getCachedItems', () => {
-    it('should return cached items from backend', async () => {
-      const mockItems = [
-        { id: '1', title: 'Book 1' },
-        { id: '2', title: 'Book 2' },
-      ];
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: true, is_stale: false, stats: null };
-        }
-        if (cmd === 'get_cached_items') {
-          return mockItems;
-        }
-      });
-
-      const { result } = renderHook(() => useAbsCache());
-
-      let items;
-      await act(async () => {
-        items = await result.current.getCachedItems();
-      });
-
-      expect(items).toEqual(mockItems);
-    });
-
-    it('should return empty array on error', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: false, is_stale: true, stats: null };
-        }
-        if (cmd === 'get_cached_items') {
-          throw new Error('Failed');
-        }
-      });
-
+    it('returns an empty list in the web build', async () => {
       const { result } = renderHook(() => useAbsCache());
 
       let items;
@@ -223,98 +124,42 @@ describe('useAbsCache hook', () => {
     });
   });
 
-  describe('getCachedItem', () => {
-    it('should return single item by ID', async () => {
-      const mockItem = { id: 'abc', title: 'Test Book' };
-      mockInvoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: true, is_stale: false, stats: null };
-        }
-        if (cmd === 'get_cached_item') {
-          expect(args.id).toBe('abc');
-          return mockItem;
-        }
-      });
-
+  describe('desktop-only cache lookups', () => {
+    it('getCachedItem returns null (command not available in web)', async () => {
       const { result } = renderHook(() => useAbsCache());
 
       let item;
       await act(async () => {
-        item = await result.current.getCachedItem('abc');
+        item = await result.current.getCachedItem('item-1');
       });
 
-      expect(item).toEqual(mockItem);
-    });
-
-    it('should return null on error', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: false, is_stale: true, stats: null };
-        }
-        if (cmd === 'get_cached_item') {
-          throw new Error('Not found');
-        }
-      });
-
-      const { result } = renderHook(() => useAbsCache());
-
-      let item;
-      await act(async () => {
-        item = await result.current.getCachedItem('nonexistent');
-      });
-
+      expect(callBackend).toHaveBeenCalledWith('get_cached_item', { id: 'item-1' });
       expect(item).toBe(null);
     });
-  });
 
-  describe('searchCachedItems', () => {
-    it('should search with query', async () => {
-      const mockResults = [{ id: '1', title: 'Harry Potter' }];
-      mockInvoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: true, is_stale: false, stats: null };
-        }
-        if (cmd === 'search_cached_items') {
-          expect(args.query).toBe('harry');
-          return mockResults;
-        }
-      });
-
+    it('searchCachedItems returns [] (command not available in web)', async () => {
       const { result } = renderHook(() => useAbsCache());
 
-      let results;
+      let items;
       await act(async () => {
-        results = await result.current.searchCachedItems('harry');
+        items = await result.current.searchCachedItems('dune');
       });
 
-      expect(results).toEqual(mockResults);
+      expect(callBackend).toHaveBeenCalledWith('search_cached_items', { query: 'dune' });
+      expect(items).toEqual([]);
     });
   });
 
   describe('clearCache', () => {
     it('should clear cache and reset status', async () => {
-      mockInvoke.mockImplementation(async (cmd) => {
-        if (cmd === 'get_abs_cache_status') {
-          return { is_loaded: true, is_stale: false, stats: { total_items: 100 } };
-        }
-        if (cmd === 'clear_abs_full_cache') {
-          return undefined;
-        }
-      });
-
       const { result } = renderHook(() => useAbsCache());
-
-      await waitFor(() => {
-        expect(result.current.cacheStatus.isLoaded).toBe(true);
-      });
 
       await act(async () => {
         await result.current.clearCache();
       });
 
-      expect(result.current.cacheStatus.isLoaded).toBe(false);
-      expect(result.current.cacheStatus.isStale).toBe(true);
-      expect(result.current.cacheStatus.stats).toBe(null);
+      expect(callBackend).toHaveBeenCalledWith('clear_abs_full_cache');
+      expect(result.current.cacheStatus).toEqual({ isLoaded: false, isStale: true, stats: null });
     });
   });
 
