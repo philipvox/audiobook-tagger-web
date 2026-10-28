@@ -7,6 +7,7 @@ import { absApi, callAI, parseAIJson, proxyFetch } from './lib/proxy';
 import { buildMetadataPrompt, buildClassificationPrompt, buildDescriptionPrompt, buildDnaPrompt, BOOK_DNA_SYSTEM_PROMPT, SYSTEM_PROMPT, DEFAULT_TAG_INSTRUCTIONS } from './lib/prompts';
 import { toTitleCase, removeJunkSuffixes, cleanAuthorName, cleanNarratorName } from './lib/normalize';
 import { APPROVED_GENRES, APPROVED_TAGS, GENRE_ALIASES, mapGenre, enforceGenrePolicyWithSplit, enforceTagPolicyWithDna } from './lib/genres';
+import { splitPeople, importLibraryGroups, getImportSnapshot, recordImportSnapshot } from './lib/absImport';
 
 /** Safely serialize a value for AI prompts (escapes quotes/newlines). */
 function safe(value) {
@@ -239,74 +240,122 @@ function needsLibrarySeries(items) {
   });
 }
 
+// ---- diff helpers ----
+const PLACEHOLDER_RE = /^unknown$/i;
+function scalar(v) {
+  if (v === undefined || v === null) return '';
+  return String(v).trim();
+}
+function list(v) {
+  return Array.isArray(v) ? v.filter(x => x != null && String(x).trim() !== '').map(x => String(x).trim()) : [];
+}
+function sameSet(a, b) {
+  const A = list(a), B = list(b);
+  if (A.length !== B.length) return false;
+  const sb = new Set(B);
+  return A.every(x => sb.has(x));
+}
+function seriesKey(meta) {
+  const all = Array.isArray(meta?.all_series) ? meta.all_series : [];
+  return JSON.stringify({
+    s: scalar(meta?.series), q: scalar(meta?.sequence),
+    a: all.filter(s => s && s.name).map(s => [scalar(s.name), scalar(s.sequence)]),
+  });
+}
+function yearOf(meta) {
+  return meta?.year ?? meta?.published_year ?? meta?.publishedYear ?? null;
+}
+
 /**
  * Build ABS-formatted PATCH payload from internal metadata.
- * Matches src-tauri/src/commands/abs.rs build_update_payload():
- * - Authors: split on , and & → [{id: "new-N", name}]
- * - Narrators: wrapped as array
- * - Genres: enforced (max 3, validated)
- * - Tags: at TOP LEVEL, DNA-aware enforcement
+ *
+ * Diff mode (opts.original = the book's metadata as imported from ABS):
+ * only fields whose value differs from the import are sent. Tags/genres are
+ * compared as sets; a change is sent verbatim. An empty list is sent only if
+ * the import had values (i.e. they were cleared in this session).
+ *
+ * Fallback (no snapshot): every non-empty field is sent, but never an empty
+ * genres/tags list.
+ *
+ * In BOTH modes, tags/genres are sent as-is: the tag/genre policy (approved
+ * list, caps, fuzzy mapping) is applied where AI produces values, never here,
+ * so existing ABS tags (dna:*, favorites, owned, ...) survive a push.
+ *
+ * - Authors/narrators: split with splitPeople ("King, Jr." stays one name,
+ *   "Unknown" is dropped — an authorless book omits `authors`).
+ * - Tags: top level (not inside metadata).
  *
  * Series (#2): ABS creates a new series for any name it doesn't know exactly
  * and REMOVES any series missing from the array, so:
  * - preserve_series ON (default): the `series` key is omitted entirely.
- * - preserve_series OFF: existing all_series is sent unchanged; a book with no
- *   existing series gets its (AI/user) series name, reusing the library's
- *   existing series {id, name} when a normalized name matches.
+ * - preserve_series OFF: existing all_series is sent unchanged; a book with no existing series
+ *   gets its (AI/user) series name, reusing the library's existing series
+ *   {id, name} when a normalized name matches. In diff mode nothing is sent
+ *   if the series info is unchanged.
  * - `series: []` is never sent (CR-4a) — no info means omit the key.
  *
  * @param {object} meta
  * @param {object} [opts]
+ * @param {object|null} [opts.original] import snapshot to diff against
  * @param {boolean} [opts.preserveSeries] defaults to config.preserve_series !== false
  * @param {Array<{id,name}>} [opts.librarySeries] existing series in the library
  */
 export function buildAbsPayload(meta, opts = {}) {
   const config = getLocalConfig();
   const preserveSeries = opts.preserveSeries ?? (config.preserve_series !== false);
+  const original = opts.original || null;
   const metadata = {};
 
-  if (meta.title) metadata.title = meta.title;
-  if (meta.subtitle) metadata.subtitle = meta.subtitle;
-  if (meta.description) metadata.description = meta.description;
-  if (meta.publisher) metadata.publisher = meta.publisher;
-  if (meta.published_year || meta.publishedYear) metadata.publishedYear = meta.published_year || meta.publishedYear;
-  if (meta.isbn) metadata.isbn = meta.isbn;
-  if (meta.asin) metadata.asin = meta.asin;
-  if (meta.language) metadata.language = meta.language;
+  const changed = (cur, orig) => !original || scalar(cur) !== scalar(orig);
 
-  // Authors: split on , and & (matching desktop), create {id, name} objects
-  if (meta.author) {
-    const authors = meta.author.split(/[,&]/)
-      .map(a => a.trim())
-      .filter(a => a)
-      .map((name, i) => ({ id: `new-${i + 1}`, name }));
-    if (authors.length > 0) metadata.authors = authors;
+  const scalars = [
+    ['title', meta.title, original?.title],
+    ['subtitle', meta.subtitle, original?.subtitle],
+    ['description', meta.description, original?.description],
+    ['publisher', meta.publisher, original?.publisher],
+    ['publishedYear', yearOf(meta), yearOf(original)],
+    ['isbn', meta.isbn, original?.isbn],
+    ['asin', meta.asin, original?.asin],
+    ['language', meta.language, original?.language],
+  ];
+  for (const [key, cur, orig] of scalars) {
+    if (hasValue(cur) && !(key === 'title' && PLACEHOLDER_RE.test(scalar(cur))) && changed(cur, orig)) {
+      metadata[key] = cur;
+    }
   }
 
-  // Narrators: split on , into array (desktop wraps single as [n])
-  if (meta.narrator) {
-    metadata.narrators = meta.narrator.split(',').map(n => n.trim()).filter(Boolean);
+  if (changed(meta.author, original?.author)) {
+    const names = splitPeople(meta.author);
+    if (names.length > 0) metadata.authors = names.map((name, i) => ({ id: `new-${i + 1}`, name }));
   }
 
-  // Genres: enforce policy (max 3, validated against approved list) if enabled
-  if (meta.genres && meta.genres.length > 0) {
-    metadata.genres = config.genre_enforcement !== false
-      ? enforceGenrePolicyWithSplit(meta.genres)
-      : meta.genres.slice(0, 3);
+  if (changed(meta.narrator, original?.narrator)) {
+    const names = splitPeople(meta.narrator);
+    if (names.length > 0) metadata.narrators = names;
+  }
+
+  const curGenres = list(meta.genres);
+  if (!original) {
+    if (curGenres.length > 0) metadata.genres = curGenres;
+  } else if (!sameSet(curGenres, original.genres)) {
+    metadata.genres = curGenres; // may be [] only when import had genres
   }
 
   const hasSeq = (v) => v !== undefined && v !== null && String(v).trim() !== '';
-  if (!preserveSeries) {
+  const seriesUnchanged = original && seriesKey(meta) === seriesKey(original);
+  if (!preserveSeries && !seriesUnchanged) {
     if (meta.all_series && meta.all_series.length > 0) {
       // Book already has series in ABS: send them back unchanged.
-      const list = meta.all_series.filter(s => s && s.name).map(s => {
+      // (Series parsed from a minified seriesName carry no id; ABS matches
+      // exact names to the existing series.)
+      const out = meta.all_series.filter(s => s && s.name).map(s => {
         const obj = {};
         if (s.id) obj.id = s.id;
         obj.name = s.name;
         if (hasSeq(s.sequence)) obj.sequence = String(s.sequence);
         return obj;
       });
-      if (list.length > 0) metadata.series = list;
+      if (out.length > 0) metadata.series = out;
     } else if (meta.series && String(meta.series).trim()) {
       // Book has no series yet: fill it, reusing an existing library series.
       const match = findLibrarySeries(meta.series, opts.librarySeries);
@@ -317,13 +366,23 @@ export function buildAbsPayload(meta, opts = {}) {
     // else: no series info — omit the key (never send [], it wipes series).
   }
 
-  // Tags: TOP LEVEL (not inside metadata), DNA-aware enforcement
-  const finalTags = enforceTagPolicyWithDna(meta.tags || []);
+  // Tags: TOP LEVEL (not inside metadata), sent verbatim.
   const payload = { metadata };
-  if (finalTags.length > 0) payload.tags = finalTags;
+  const curTags = list(meta.tags);
+  if (!original) {
+    if (curTags.length > 0) payload.tags = curTags;
+  } else if (!sameSet(curTags, original.tags)) {
+    payload.tags = curTags; // may be [] only when import had tags
+  }
 
   return payload;
 }
+
+/** True if a payload from buildAbsPayload would change nothing. */
+export function isEmptyPayload(payload) {
+  return Object.keys(payload.metadata || {}).length === 0 && !('tags' in payload);
+}
+
 
 // ============================================================================
 // COMMAND HANDLERS — client-side implementations
@@ -347,87 +406,28 @@ const HANDLERS = {
   },
 
   // === ABS Import ===
-  import_from_abs: async (args) => {
+  import_from_abs: async () => {
     const config = getLocalConfig();
-    const { abs_base_url: baseUrl, abs_api_token: token, abs_library_id: libraryId } = config;
-    if (!baseUrl || !token || !libraryId) {
-      throw new Error('Configure ABS URL, token, and library ID in Settings first');
-    }
-
-    const allItems = [];
-    let page = 0;
-    const limit = 100;
-    let total = 0;
-
-    do {
-      const data = await absApi(baseUrl, token, `/api/libraries/${libraryId}/items?limit=${limit}&page=${page}&expanded=1`);
-      const items = data.results || [];
-      total = data.total || 0;
-      allItems.push(...items);
-      page++;
-    } while (allItems.length < total);
-
-    // Convert ABS items to book groups
-    const groups = allItems.map(item => absItemToBookGroup(item, baseUrl));
-    return { groups, total: groups.length };
+    // The items list endpoint always returns minified items (it ignores
+    // expanded=1); series are parsed from seriesName. Each book's metadata is
+    // snapshotted so a later push only sends what changed.
+    const groups = await importLibraryGroups(config, (current, total, message) =>
+      emitEvent('import_progress', { current, total, message }));
+    return { groups, total: groups.length, total_imported: groups.length };
   },
 
   // === ABS Push ===
+  // Both push commands share pushItemsToAbs. Each item is diffed against its
+  // import snapshot; unchanged books are not PATCHed at all.
   push_abs_updates: async (args) => {
-    const config = getLocalConfig();
-    const { abs_base_url: baseUrl, abs_api_token: token } = config;
     const items = args.request?.items || args.items || [];
-    let success = 0, failed = 0;
-    const errors = [];
-
-    const librarySeries = await loadLibrarySeriesForPush(config, items);
-
-    for (const item of items) {
-      try {
-        const absId = item.abs_id || item.id;
-        if (!absId) { failed++; errors.push({ id: 'unknown', error: 'Missing item ID' }); continue; }
-        const meta = item.metadata || item;
-        const payload = buildAbsPayload(meta, { librarySeries });
-        await absApi(baseUrl, token, `/api/items/${absId}/media`, {
-          method: 'PATCH',
-          body: payload,
-        });
-        success++;
-      } catch (err) {
-        failed++;
-        errors.push({ id: item.abs_id || item.id, error: err.message });
-      }
-    }
-    return { success, failed, errors };
+    const r = await pushItemsToAbs(items);
+    return { ...r, success: r.updated };
   },
 
-  // === ABS Push Imports (same formatting, different return shape) ===
   push_abs_imports: async (args) => {
-    const config = getLocalConfig();
-    const { abs_base_url: baseUrl, abs_api_token: token } = config;
     const items = args.request?.items || args.items || [];
-    let updated = 0, failed = 0;
-    const errors = [];
-
-    const librarySeries = await loadLibrarySeriesForPush(config, items);
-
-    for (const item of items) {
-      try {
-        const absId = item.id || item.abs_id;
-        if (!absId) { failed++; errors.push('Missing item ID'); continue; }
-        const meta = item.metadata || {};
-        const payload = buildAbsPayload(meta, { librarySeries });
-        await absApi(baseUrl, token, `/api/items/${absId}/media`, {
-          method: 'PATCH',
-          body: payload,
-        });
-        updated++;
-      } catch (err) {
-        failed++;
-        errors.push(err.message);
-      }
-    }
-    return { updated, failed, errors };
+    return pushItemsToAbs(items);
   },
 
   // === ABS Chapters ===
@@ -1211,60 +1211,53 @@ Return JSON: {"year":"2005"}`;
 };
 
 // ============================================================================
-// ABS Item → BookGroup conversion (runs in browser)
+// ABS PUSH (shared by push_abs_updates / push_abs_imports)
 // ============================================================================
 
-function absItemToBookGroup(item, absBaseUrl) {
-  const meta = item.media?.metadata || {};
-  const base = absBaseUrl.replace(/\/$/, '');
+/**
+ * PATCH each item's changes to ABS.
+ * @returns {{updated:number, unchanged:number, failed:number, errors:string[], results:Array}}
+ */
+async function pushItemsToAbs(items) {
+  const config = getLocalConfig();
+  const { abs_base_url: baseUrl, abs_api_token: token } = config;
+  let updated = 0, unchanged = 0, failed = 0;
+  const errors = [];
+  const results = [];
 
-  // ABS returns authors as both `authorName` (string) and `authors` (array of {id, name})
-  const author = meta.authorName
-    || (meta.authors || []).map(a => typeof a === 'string' ? a : a.name).join(', ')
-    || 'Unknown';
+  const librarySeries = await loadLibrarySeriesForPush(config, items);
 
-  const narrator = meta.narratorName
-    || (meta.narrators || []).map(n => typeof n === 'string' ? n : n.name).join(', ')
-    || null;
-
-  // Series can be in metadata.series (array) or metadata.seriesName (string)
-  const seriesArr = (meta.series || []).map(s => ({
-    name: typeof s === 'string' ? s : s.name,
-    sequence: s.sequence || null,
-    source: 'abs',
-  }));
-
-  return {
-    id: item.id || crypto.randomUUID(),
-    abs_id: item.id,
-    source: 'abs',
-    metadata: {
-      title: meta.title || 'Unknown',
-      author,
-      narrator,
-      subtitle: meta.subtitle || null,
-      series: seriesArr[0]?.name || meta.seriesName || null,
-      sequence: seriesArr[0]?.sequence || meta.seriesSequence || null,
-      all_series: seriesArr,
-      genres: meta.genres || [],
-      tags: item.media?.tags || [],
-      description: meta.description || null,
-      publisher: meta.publisher || null,
-      published_year: meta.publishedYear || meta.publishedDate?.substring(0, 4) || null,
-      language: meta.language || null,
-      isbn: meta.isbn || null,
-      asin: meta.asin || null,
-      cover_url: item.id ? `${base}/api/items/${item.id}/cover?token=${encodeURIComponent(getLocalConfig().abs_api_token)}` : null,
-      duration: item.media?.duration || null,
-      added_at: item.addedAt || item.createdAt || 0,
-    },
-    files: (item.media?.audioFiles || []).map(f => ({
-      path: f.metadata?.path || '',
-      filename: f.metadata?.filename || '',
-      duration: f.duration || 0,
-      size: f.metadata?.size || 0,
-    })),
-  };
+  for (const item of items) {
+    const absId = item.abs_id || item.id;
+    const label = item.metadata?.title || absId || 'unknown';
+    if (!absId) {
+      failed++;
+      errors.push(`${label}: missing ABS item ID`);
+      results.push({ id: null, success: false, error: 'Missing item ID' });
+      continue;
+    }
+    try {
+      const meta = item.metadata || item;
+      const original = item.original_metadata || getImportSnapshot(absId);
+      const payload = buildAbsPayload(meta, { librarySeries, original });
+      if (isEmptyPayload(payload)) {
+        unchanged++;
+        results.push({ id: absId, success: true, unchanged: true });
+        continue;
+      }
+      await absApi(baseUrl, token, `/api/items/${absId}/media`, { method: 'PATCH', body: payload });
+      // ABS now holds this state: future pushes diff against it.
+      recordImportSnapshot(absId, { ...(original || {}), ...meta });
+      updated++;
+      results.push({ id: absId, success: true });
+    } catch (err) {
+      failed++;
+      const msg = err?.message || String(err);
+      errors.push(`${label}: ${msg}`);
+      results.push({ id: absId, success: false, error: msg });
+    }
+  }
+  return { updated, unchanged, failed, errors, results };
 }
 
 // ============================================================================

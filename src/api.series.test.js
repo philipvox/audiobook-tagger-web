@@ -10,6 +10,7 @@ vi.mock('./lib/proxy', () => ({
 
 import { buildAbsPayload, normalizeSeriesName, findLibrarySeries, callBackend } from './api';
 import { absApi, callAI } from './lib/proxy';
+import { clearImportSnapshots } from './lib/absImport';
 
 const CONFIG_KEY = 'audiobook_tagger_config';
 const setConfig = (cfg) => localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
@@ -22,6 +23,7 @@ const library = [
 
 beforeEach(() => {
   localStorage.clear();
+  clearImportSnapshots();
   vi.mocked(absApi).mockReset();
   vi.mocked(callAI).mockReset();
 });
