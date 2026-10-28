@@ -2,7 +2,7 @@
 
 A browser-based metadata manager for [AudiobookShelf](https://www.audiobookshelf.org/). Pull your library, enrich metadata with AI, and push clean results back — all from your browser.
 
-**100% client-side.** No backend server. Your API keys never leave your browser.
+**100% client-side.** No backend server. Your keys are stored only in your browser and sent only to the services they belong to — with one exception: if your ABS server blocks the browser with CORS, ABS requests (including your ABS token) are relayed through a CORS proxy worker. AI keys are never sent through that proxy. See [CORS & Connectivity](#cors--connectivity).
 
 ![React](https://img.shields.io/badge/React-18-blue)
 ![Vite](https://img.shields.io/badge/Vite-5-purple)
@@ -105,7 +105,9 @@ Open `http://localhost:5173`
 
 ## CORS & Connectivity
 
-Browsers block cross-origin requests by default (CORS). The app tries to connect to your ABS server directly first. If that fails due to CORS, it falls back to a Cloudflare Worker proxy.
+Browsers block cross-origin requests by default (CORS). The app always tries to connect to your ABS server directly first. **Only** if the browser blocks that request (a CORS or network error) does it retry through a Cloudflare Worker proxy — your ABS token and the request then pass through the worker. Timeouts and HTTP errors from your server are reported as errors and are never retried through the proxy.
+
+**AI requests never use the worker.** With the default OpenAI / Anthropic endpoints, the app calls the same-origin `/api/openai` and `/api/anthropic` paths of the host serving the app (configure your web server to reverse-proxy those). A custom AI base URL is called directly from the browser; if it doesn't allow CORS, the request fails with an error rather than being relayed.
 
 **To avoid the proxy entirely**, enable CORS in ABS or your reverse proxy. This means your data goes straight from your browser to your server — nothing in between. The Settings page shows whether you're connected directly or via the proxy.
 
@@ -169,7 +171,7 @@ Set `ALLOWED_ORIGINS` in the worker's environment to restrict which domains can 
 
 ### Option 4: Use the Default Proxy
 
-The app ships with a default proxy. The proxy code is fully open source (`worker/index.js`, ~100 lines) — it forwards requests and returns responses, nothing is stored or logged. If you'd rather not trust a third party, use Option 1, 2, or 3.
+The app ships with a default proxy, used only for ABS requests the browser blocks with CORS. The proxy code is fully open source (`worker/index.js`) — it forwards requests and returns responses, nothing is stored or logged; it refuses private/loopback targets and does not follow redirects. If you'd rather not trust a third party, use Option 1, 2, or 3.
 
 ## Architecture
 
@@ -177,10 +179,10 @@ The app ships with a default proxy. The proxy code is fully open source (`worker
 Browser (static HTML/JS/CSS)
   ├── localStorage (config, API keys)
   ├── src/lib/ (prompts, normalize, genres, ABS client)
-  └── Cloudflare Worker (CORS proxy)
-       ├── -> User's ABS server
-       ├── -> OpenAI API
-       └── -> Anthropic API
+  ├── -> User's ABS server (direct)
+  │     └── Cloudflare Worker CORS proxy (only if the browser blocks the direct request)
+  ├── -> /api/openai, /api/anthropic (same-origin reverse proxy, default AI endpoints)
+  └── -> custom AI base URL (direct only, never via the worker)
 ```
 
 **Frontend:** React 18, Vite, TailwindCSS, Lucide Icons
@@ -199,8 +201,12 @@ worker/           # Cloudflare Worker CORS proxy
 ## Configuration
 
 All settings are stored in browser `localStorage`. Nothing is sent to any server except:
-- Your ABS server (to fetch/push metadata)
-- OpenAI or Anthropic API (for AI enrichment)
+- Your ABS server (to fetch/push metadata) — via the CORS proxy worker only if the browser blocks direct access
+- OpenAI or Anthropic API (for AI enrichment) — via the hosting server's same-origin `/api/*` proxy, or directly for a custom base URL
+
+### What a push sends
+
+A push only sends the fields you changed since the library was imported (unchanged books aren't touched). Tags and genres that already exist in ABS — including `dna:*` tags and your own tags like `favorites` — are never filtered, capped or remapped; the approved tag/genre policy applies only to values the AI produces. AI tag results are merged into existing tags.
 
 Required:
 - AudiobookShelf URL and API token

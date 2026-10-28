@@ -1,6 +1,7 @@
 // src/api.js
 // Transport adapter — 100% client-side. No backend server needed.
-// All API calls go through the Cloudflare Worker CORS proxy.
+// ABS calls go direct (CORS-worker fallback only if the browser blocks them);
+// AI calls never use the worker (see lib/proxy.js).
 // Config lives in browser localStorage.
 
 import { absApi, callAI, parseAIJson, proxyFetch } from './lib/proxy';

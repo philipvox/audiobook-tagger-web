@@ -1,6 +1,9 @@
 // src/lib/proxy.js
-// Smart fetch — tries direct first, falls back to CORS proxy if blocked.
-// This way it works both locally (direct) and on GitHub Pages (via proxy).
+// Smart fetch — ABS requests go direct first and fall back to the CORS proxy
+// worker only when the browser blocks them (CORS/network TypeError). AI
+// requests never use the worker: official OpenAI/Anthropic go through the
+// same-origin /api/* reverse proxy of the host serving the app, custom base
+// URLs go direct only.
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'https://audiobook-tagger-proxy.philipvox.workers.dev';
 
@@ -18,14 +21,25 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
     .finally(() => clearTimeout(id));
 }
 
+function isAbortError(err) {
+  return err?.name === 'AbortError' || err?.name === 'TimeoutError';
+}
+
 /**
- * Fetch a URL, trying direct first, then falling back to the CORS proxy.
+ * Fetch a URL directly; fall back to the CORS proxy worker ONLY when the
+ * direct request failed with a genuine CORS/network error (fetch rejects with
+ * a TypeError). Timeouts/aborts and other errors are thrown as-is — retrying
+ * them through the worker would send the credentials to a third party and,
+ * for AI calls, bill the request twice.
+ *
  * @param {string} targetUrl - The actual API URL to call
  * @param {object} options - { method, headers, body }
  * @param {number} timeoutMs - timeout in milliseconds (default 30000)
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowProxyFallback=true] - false = never use the worker
  * @returns {Promise<Response>} - The response
  */
-export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000) {
+export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000, { allowProxyFallback = true } = {}) {
   const { method = 'GET', headers = {}, body = null } = options;
 
   // Try direct fetch first (works same-origin or if server allows CORS)
@@ -38,7 +52,15 @@ export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000) {
     res._connectionType = 'direct';
     return res;
   } catch (directError) {
-    // Direct failed (likely CORS) — try proxy
+    if (isAbortError(directError)) {
+      throw new Error(`Request to ${safeHost(targetUrl)} timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    if (!(directError instanceof TypeError)) throw directError;
+    if (!allowProxyFallback) {
+      throw new Error(`Could not reach ${safeHost(targetUrl)} directly (CORS or network error). `
+        + 'This request is never sent through the CORS proxy; enable CORS on that server.');
+    }
+    // Genuine CORS/network failure — fall through to the proxy.
   }
 
   // Fall back to CORS proxy
@@ -57,6 +79,15 @@ export async function proxyFetch(targetUrl, options = {}, timeoutMs = 30000) {
   return res;
 }
 
+function safeHost(url) {
+  try { return new URL(url).host; } catch { return 'server'; }
+}
+
+/** Direct request only — used for AI endpoints. */
+function directOnly(url, options, timeoutMs) {
+  return proxyFetch(url, options, timeoutMs, { allowProxyFallback: false });
+}
+
 /**
  * Test whether a direct connection to the ABS server works (no proxy).
  * Returns { direct: true/false, proxy: true/false, error?: string }
@@ -70,6 +101,7 @@ export async function testConnection(absBaseUrl, absToken) {
   const result = { direct: false, proxy: false };
 
   // Test direct
+  let corsBlocked = false;
   try {
     const res = await fetchWithTimeout(url, {
       method: 'GET',
@@ -78,11 +110,13 @@ export async function testConnection(absBaseUrl, absToken) {
     }, 10000);
     if (res.ok) result.direct = true;
   } catch (e) {
-    // CORS or network error
+    // Only a CORS/network TypeError justifies trying the proxy (not a timeout).
+    corsBlocked = e instanceof TypeError;
+    if (!corsBlocked) result.error = isAbortError(e) ? 'Timed out connecting to ABS' : e.message;
   }
 
-  // Test proxy (only if direct failed)
-  if (!result.direct) {
+  // Test proxy (only if the browser blocked the direct request)
+  if (!result.direct && corsBlocked) {
     try {
       const res = await fetchWithTimeout(`${PROXY_URL}/proxy`, {
         method: 'POST',
@@ -170,7 +204,8 @@ export async function callOpenAI(apiKey, model, systemPrompt, userPrompt, maxTok
     };
   }
 
-  const fetchFn = useLocalProxy ? fetchWithTimeout : proxyFetch;
+  // AI requests are never retried through the CORS worker (keys + billing).
+  const fetchFn = useLocalProxy ? fetchWithTimeout : directOnly;
   const res = await fetchFn(endpoint, {
     method: 'POST',
     headers: {
@@ -213,13 +248,14 @@ export async function callOpenAI(apiKey, model, systemPrompt, userPrompt, maxTok
  */
 export async function callAnthropic(apiKey, model, systemPrompt, userPrompt, maxTokens = 2000, baseUrl = 'https://api.anthropic.com') {
   // Route through Caddy local proxy only when hitting the official Anthropic URL.
-  // Custom base URLs (in-house LLM proxies) go direct via proxyFetch with CORS fallback.
+  // Custom base URLs (in-house LLM proxies) go direct only — no CORS-worker fallback.
   const isOfficial = baseUrl === 'https://api.anthropic.com';
   const useLocalProxy = typeof window !== 'undefined' && isOfficial;
   const endpoint = useLocalProxy
     ? '/api/anthropic/v1/messages'
     : `${baseUrl.replace(/\/$/, '')}/v1/messages`;
-  const fetchFn = useLocalProxy ? fetchWithTimeout : proxyFetch;
+  // AI requests are never retried through the CORS worker (keys + billing).
+  const fetchFn = useLocalProxy ? fetchWithTimeout : directOnly;
 
   const res = await fetchFn(endpoint, {
     method: 'POST',
