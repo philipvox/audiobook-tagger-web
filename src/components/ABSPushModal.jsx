@@ -170,7 +170,7 @@ export function ABSPushModal({ isOpen, onClose, onConfirm, groups, pushing }) {
               <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
               <div className="text-sm text-amber-300">
                 <p><strong className="text-amber-200">This overwrites metadata on your ABS server.</strong></p>
-                <p className="mt-1 text-amber-400">Genres, tags, descriptions, and other fields will be replaced with what you see in the tagger. This cannot be undone from this app. Back up your ABS database if unsure.</p>
+                <p className="mt-1 text-amber-400">Only fields you changed since importing are sent (unchanged books are skipped); for those fields, ABS gets exactly what you see in the tagger. Existing tags such as dna:* and your own tags are kept unless you removed them. This cannot be undone from this app. Back up your ABS database if unsure.</p>
                 <p className="mt-1 text-amber-400">
                   {preserveSeries
                     ? 'Series are preserved: series names and numbers in ABS will not be changed (turn off "Preserve existing series" in Settings to change this).'
