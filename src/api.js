@@ -62,8 +62,16 @@ export function getLocalConfig() {
     const stored = localStorage.getItem(CONFIG_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      // Migrate legacy ai_base_url → openai_base_url
-      if (parsed.ai_base_url && !parsed.openai_base_url) {
+      // Legacy configs have no ai_provider. Derive it from the model, or the
+      // ai_provider default ('openai') would route saved Claude models to OpenAI.
+      if (!parsed.ai_provider && parsed.ai_model) {
+        parsed.ai_provider = parsed.ai_model.startsWith('claude') ? 'anthropic' : 'openai';
+      }
+      // Migrate legacy ai_base_url → openai_base_url. The old model picker set
+      // ai_base_url to the Anthropic URL for Claude models; that must not
+      // become the OpenAI base URL.
+      if (parsed.ai_base_url && !parsed.openai_base_url
+          && parsed.ai_base_url !== 'https://api.anthropic.com') {
         parsed.openai_base_url = parsed.ai_base_url;
       }
       return { ...DEFAULT_CONFIG, ...parsed };
