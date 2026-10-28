@@ -101,75 +101,45 @@ function chunkArray(array, chunkSize) {
 // Only send ONE file per book group
 
 const pushToAudiobookShelf = useCallback(async (selectedFiles) => {
+  setPushing(true);
   try {
-    setPushing(true);
-    
-    
-    // Group files by book - ONLY SEND ONE FILE PER BOOK
+    // One item per book, identified by its ABS id (push_abs_updates needs it).
     const bookMap = new Map();
-    
     groups.forEach(group => {
-      // Check if any file in this group is selected
-      const hasSelectedFile = group.files.some(f => selectedFiles.has(f.id));
-      
-      if (hasSelectedFile) {
-        // Only add this book once (use first file as representative)
-        const firstFile = group.files[0];
-        if (!bookMap.has(group.id)) {
-          bookMap.set(group.id, {
-            path: firstFile.path,
-            metadata: group.metadata,
-            group_id: group.id
-          });
-        }
-      }
+      if (!group.files.some(f => selectedFiles.has(f.id))) return;
+      if (bookMap.has(group.id)) return;
+      bookMap.set(group.id, {
+        id: group.abs_id || group.id,
+        abs_id: group.abs_id || group.id,
+        path: group.files[0]?.path,
+        metadata: group.metadata,
+        group_id: group.id,
+      });
     });
-    
     const allItems = Array.from(bookMap.values());
-    
-    
-    // CHUNK INTO BATCHES OF 50
+
     const CHUNK_SIZE = 50;
-    let totalUpdated = 0;
-    let totalUnmatched = [];
-    let totalFailed = [];
-    
+    let updated = 0, unchanged = 0, failed = 0;
+    const errors = [];
+
     for (let i = 0; i < allItems.length; i += CHUNK_SIZE) {
       const chunk = allItems.slice(i, i + CHUNK_SIZE);
-      const chunkNum = Math.floor(i / CHUNK_SIZE) + 1;
-      const totalChunks = Math.ceil(allItems.length / CHUNK_SIZE);
-      
-      
       try {
-        const result = await callBackend('push_abs_updates', { 
-          request: { items: chunk } 
-        });
-        
-        totalUpdated += result.updated || 0;
-        totalUnmatched.push(...(result.unmatched || []));
-        totalFailed.push(...(result.failed || []));
-        
-        
-        // Small delay between chunks
-        if (i + CHUNK_SIZE < allItems.length) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
+        const result = await callBackend('push_abs_updates', { request: { items: chunk } });
+        updated += result?.updated ?? result?.success ?? 0;
+        unchanged += result?.unchanged || 0;
+        failed += Number(result?.failed) || 0;
+        errors.push(...(result?.errors || []).map(e => (typeof e === 'string' ? e : (e?.error || JSON.stringify(e)))));
       } catch (error) {
-        console.error(`❌ Chunk ${chunkNum} failed:`, error);
+        console.error('Push chunk failed:', error);
+        failed += chunk.length;
+        errors.push(error?.message || String(error));
       }
     }
-    
-    
+
+    return { success: failed === 0, updated, unchanged, failed, errors };
+  } finally {
     setPushing(false);
-    return {
-      updated: totalUpdated,
-      unmatched: totalUnmatched,
-      failed: totalFailed
-    };
-  } catch (error) {
-    console.error('Push failed:', error);
-    setPushing(false);
-    throw error;
   }
 }, [groups]);
   return {

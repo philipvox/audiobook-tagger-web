@@ -24,6 +24,7 @@ import { useAbsCache } from '../hooks/useAbsCache';
 import { useBatchOperations } from '../hooks/useBatchOperations';
 import { useModals } from '../hooks/useModals';
 import { useApp } from '../context/AppContext';
+import { mergeAiTags } from '../lib/tagMerge';
 
 export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoSvg }) {
   const {
@@ -1709,7 +1710,8 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
                   ...g,
                   metadata: {
                     ...g.metadata,
-                    tags: tagResult.suggested_tags,
+                    // MERGE: existing tags (dna:*, favorites, owned, ...) are kept.
+                    tags: mergeAiTags(g.metadata?.tags, tagResult.suggested_tags),
                   },
                   total_changes: (g.total_changes || 0) + 1,
                 };
@@ -1857,9 +1859,11 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
       });
 
       // Call batch API
-      const results = await callBackend('generate_book_dna_batch', {
+      const response = await callBackend('generate_book_dna_batch', {
         request: { items },
       });
+      // Handler returns { results: [...] } (older builds returned the array).
+      const results = Array.isArray(response) ? response : (response?.results || []);
 
       // Update groups with merged tags
       setGroups(prevGroups => {
@@ -1887,6 +1891,10 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
       // Show toast
       if (successCount > 0) {
         toast.success('BookDNA Generated', `Generated DNA fingerprints for ${successCount} book${successCount > 1 ? 's' : ''}`);
+      }
+      if (failedCount > 0) {
+        const firstErr = results.find(r => !r.success)?.error;
+        toast.error('BookDNA Failed', `${failedCount} book${failedCount > 1 ? 's' : ''} failed${firstErr ? `: ${firstErr}` : ''}`);
       }
 
     } catch (error) {
@@ -1930,14 +1938,15 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
       return;
     }
 
-    // When Force is on, clear existing classification data so stale tags don't persist
+    // When Force is on, clear local-only themes/tropes so stale ones don't
+    // persist. Genres and tags are NOT cleared up front: if the AI call failed
+    // the book would be left with [] and a push would wipe ABS. New genres
+    // replace old ones on success; tags are always merged (dna:* kept).
     if (forceFresh) {
       const idsToProcess = new Set(booksToProcess.map(g => g.id));
       setGroups(prev => prev.map(g => {
         if (!idsToProcess.has(g.id)) return g;
         const m = { ...g.metadata };
-        m.genres = [];
-        m.tags = [];
         m.themes = [];
         m.tropes = [];
         return { ...g, metadata: m, changedFields: [] };
@@ -1991,13 +2000,11 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
           // Genres
           if (r.genres?.length > 0) updatedMeta.genres = r.genres;
 
-          // Tags: merge classification tags + DNA tags + age tags (dedup)
-          const allTags = new Set([
-            ...(r.tags || []),
-            ...(r.dna_tags || []),
-            ...(r.age_tags || []),
-          ]);
-          updatedMeta.tags = [...allTags];
+          // Tags: MERGE classification + DNA + age tags into the existing tags
+          // (existing dna:* and user tags are always kept).
+          const aiTags = [...(r.tags || []), ...(r.dna_tags || []), ...(r.age_tags || [])];
+          const allTags = new Set(aiTags);
+          updatedMeta.tags = mergeAiTags(g.metadata?.tags, aiTags);
 
           // Themes & tropes
           if (r.themes?.length > 0) updatedMeta.themes = r.themes;
@@ -2584,7 +2591,7 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
     modals.open('push', { groups: selectedGroups });
   };
 
-  // ✅ Actually push after confirmation
+  // ✅ Actually push after confirmation — always report the outcome.
   const handleConfirmPush = async () => {
     const pushGroups = modals.data.push?.groups || [];
     if (pushGroups.length === 0) return;
@@ -2593,32 +2600,44 @@ export function ScannerPage({ onNavigateToSettings, activeTab, navigateTo, logoS
     const absImports = pushGroups.filter(g => (g.files?.length || 0) === 0);
     const localFiles = pushGroups.filter(g => (g.files?.length || 0) > 0);
 
+    let updated = 0, unchanged = 0, failed = 0;
+    const errors = [];
     try {
       // Handle ABS imports - use direct ID-based push
       if (absImports.length > 0) {
         const result = await handlePushAbsImports(absImports);
+        updated += result.updated || 0;
+        unchanged += result.unchanged || 0;
+        failed += result.failed || 0;
+        errors.push(...(result.errors || []));
       }
 
-      // Handle local files - use path-based push
+      // Handle local files - push by the group's ABS id
       if (localFiles.length > 0) {
         const actualSelectedFiles = getSelectedFileIds(groups);
-
-        const result = await pushToAudiobookShelf(
-          actualSelectedFiles,
-          (progress) => {
-          }
-        );
-
-
-        if (result.unmatched?.length > 0) {
-        }
-        if (result.failed?.length > 0) {
-        }
+        const result = await pushToAudiobookShelf(actualSelectedFiles);
+        updated += result.updated || 0;
+        unchanged += result.unchanged || 0;
+        failed += result.failed || 0;
+        errors.push(...(result.errors || []));
       }
     } catch (error) {
       console.error('Push failed:', error);
+      failed += Math.max(pushGroups.length - updated - unchanged - failed, 1);
+      errors.push(error?.message || String(error));
     } finally {
       modals.close('push');
+    }
+
+    const parts = [];
+    if (updated > 0) parts.push(`${updated} updated`);
+    if (unchanged > 0) parts.push(`${unchanged} unchanged (nothing to send)`);
+    if (failed > 0) parts.push(`${failed} failed`);
+    const summary = parts.join(', ') || 'Nothing was pushed';
+    if (failed > 0) {
+      toast.error('Push to ABS finished with errors', `${summary}. First error: ${errors[0] || 'unknown error'}`, 12000);
+    } else {
+      toast.success('Pushed to ABS', summary);
     }
   };
 

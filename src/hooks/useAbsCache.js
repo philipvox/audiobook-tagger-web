@@ -23,9 +23,10 @@ export function useAbsCache() {
     try {
       const status = await callBackend('get_abs_cache_status');
       setCacheStatus({
-        isLoaded: status.is_loaded,
-        isStale: status.is_stale,
-        stats: status.stats,
+        isLoaded: !!status?.is_loaded,
+        // Older handlers returned `stale` instead of `is_stale`.
+        isStale: status?.is_stale ?? status?.stale ?? true,
+        stats: status?.stats ?? null,
       });
       return status;
     } catch (error) {

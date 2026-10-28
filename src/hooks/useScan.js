@@ -2,6 +2,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { callBackend, subscribe, pickPath } from '../api';
 import { useApp } from '../context/AppContext';
+import { mergeAiTags } from '../lib/tagMerge';
 
 export function useScan() {
   const { setGroups } = useApp();
@@ -493,26 +494,23 @@ export function useScan() {
 
       const request = {
         items: groupsToPush.map(g => ({
-          id: g.id,
+          id: g.abs_id || g.id,
           metadata: g.metadata,
         }))
       };
 
       const result = await callBackend('push_abs_imports', { request });
+      const updated = result?.updated || 0;
+      const unchanged = result?.unchanged || 0;
+      const failed = result?.failed || 0;
+      const errors = (result?.errors || []).map(e => (typeof e === 'string' ? e : (e?.error || JSON.stringify(e))));
 
-      if (result.errors && result.errors.length > 0) {
-        // Group errors by type
-        const errorTypes = {};
-        result.errors.forEach(err => {
-          const match = err.match(/HTTP (\d+)|timeout|connection|dns/i);
-          const type = match ? match[0] : 'other';
-          errorTypes[type] = (errorTypes[type] || 0) + 1;
-        });
-        console.warn('Push error breakdown:', errorTypes);
-        console.warn('Sample errors:', result.errors.slice(0, 10));
+      if (errors.length > 0) {
+        console.warn('Push errors (first 10):', errors.slice(0, 10));
       }
 
-      return { success: true, updated: result.updated, failed: result.failed };
+      // Success only if nothing failed.
+      return { success: failed === 0, updated, unchanged, failed, errors };
 
     } catch (error) {
       console.error('ABS push failed:', error);
@@ -691,20 +689,25 @@ export function useScan() {
           }
         });
 
-        setGroups(prevGroups =>
-          prevGroups.map(g => {
-            const newMeta = updatedMap.get(g.id);
-            if (!newMeta) return g;
+        // AI tags are MERGED into existing tags (dna:*, user tags kept) and an
+        // empty AI genre list never replaces existing genres.
+        const mergePipeline = (g) => {
+          const newMeta = updatedMap.get(g.id);
+          if (!newMeta) return g;
+          const { tags: aiTags, genres: aiGenres, ...rest } = newMeta;
+          return {
+            ...g,
+            metadata: {
+              ...g.metadata,
+              ...rest,
+              genres: aiGenres && aiGenres.length > 0 ? aiGenres : g.metadata.genres,
+              tags: mergeAiTags(g.metadata.tags, aiTags),
+            },
+          };
+        };
+        const mergedSelected = selectedGroups.filter(g => updatedMap.has(g.id)).map(mergePipeline);
 
-            return {
-              ...g,
-              metadata: {
-                ...g.metadata,
-                ...newMeta,
-              }
-            };
-          })
-        );
+        setGroups(prevGroups => prevGroups.map(mergePipeline));
 
         // Auto-push to ABS if enabled
         if (autoPush && result.processed > 0) {
@@ -714,8 +717,9 @@ export function useScan() {
           }));
 
           try {
-            const groupsToPush = selectedGroups.filter(g => updatedMap.has(g.id));
-            const pushResult = await handlePushAbsImports(groupsToPush);
+            // Push the UPDATED metadata (not the pre-pipeline groups).
+            const pushResult = await handlePushAbsImports(mergedSelected);
+            if (!pushResult.success) console.error('Auto-push had failures:', pushResult.errors?.[0]);
           } catch (pushError) {
             console.error('Auto-push failed:', pushError);
           }

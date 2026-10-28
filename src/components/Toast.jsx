@@ -3,6 +3,7 @@
 
 import { useState, useEffect, createContext, useContext, useCallback } from 'react';
 import { CheckCircle, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
+import { subscribe } from '../api';
 
 const TOAST_TYPES = {
   success: {
@@ -128,6 +129,18 @@ export function ToastProvider({ children }) {
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // Desktop-only commands throw NotAvailableInWebError; surface every one of
+  // them here so no caller can fail silently (throttled per command).
+  useEffect(() => {
+    const lastShown = new Map();
+    return subscribe('backend_unavailable', ({ cmd, message }) => {
+      const now = Date.now();
+      if (now - (lastShown.get(cmd) || 0) < 4000) return;
+      lastShown.set(cmd, now);
+      addToast({ type: 'warning', title: 'Not available in the web version', message: message || cmd, duration: 7000 });
+    });
+  }, [addToast]);
 
   const toast = {
     success: (title, message, duration) => addToast({ type: 'success', title, message, duration }),

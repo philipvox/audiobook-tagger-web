@@ -7,6 +7,7 @@ import { absApi, callAI, parseAIJson, proxyFetch } from './lib/proxy';
 import { buildMetadataPrompt, buildClassificationPrompt, buildDescriptionPrompt, buildDnaPrompt, BOOK_DNA_SYSTEM_PROMPT, SYSTEM_PROMPT, DEFAULT_TAG_INSTRUCTIONS } from './lib/prompts';
 import { toTitleCase, removeJunkSuffixes, cleanAuthorName, cleanNarratorName } from './lib/normalize';
 import { APPROVED_GENRES, APPROVED_TAGS, GENRE_ALIASES, mapGenre, enforceGenrePolicyWithSplit, enforceTagPolicyWithDna } from './lib/genres';
+import { mergeAiTags, policeAiTags, policeAiGenres } from './lib/tagMerge';
 import { splitPeople, importLibraryGroups, getImportSnapshot, recordImportSnapshot } from './lib/absImport';
 
 /** Safely serialize a value for AI prompts (escapes quotes/newlines). */
@@ -101,15 +102,52 @@ export function saveLocalConfig(config) {
 // All existing component code calls this — we just changed what's under the hood.
 // ============================================================================
 
+/** Thrown for desktop-only commands. Callers must not treat it as success. */
+export class NotAvailableInWebError extends Error {
+  constructor(cmd) {
+    super(`'${cmd}' is not available in the web version.`);
+    this.name = 'NotAvailableInWebError';
+    this.code = 'NOT_AVAILABLE_IN_WEB';
+    this.cmd = cmd;
+  }
+}
+
 export async function callBackend(cmd, args = {}) {
   const handler = HANDLERS[cmd];
   if (handler) {
     return handler(args);
   }
 
-  // Commands that aren't wired up yet — return a stub instead of crashing
-  console.warn(`Command '${cmd}' not available in web version`);
-  return { _stub: true, message: `'${cmd}' is not available in the web version.` };
+  // Desktop-only command (file tagging, local scans, chapters, export, ...).
+  // Throw so no caller can report success, and emit an event so the app shows
+  // a toast even where a caller only logs the error.
+  const err = new NotAvailableInWebError(cmd);
+  console.warn(err.message);
+  emitEvent('backend_unavailable', { cmd, message: err.message });
+  throw err;
+}
+
+/** Age/content tags derived from an AI age_rating (object or numeric age). */
+function buildAgeTags(ageRating) {
+  const age_tags = [];
+  if (ageRating && typeof ageRating === 'object') {
+    if (ageRating.intended_for_kids === true) age_tags.push('for-kids');
+    else age_tags.push('not-for-kids');
+    const catMap = { "Children's 0-2": 'age-childrens', "Children's 3-5": 'age-childrens', "Children's 6-8": 'age-childrens', "Children's 9-12": 'age-childrens', 'Teen 13-17': 'age-teens', 'Young Adult': 'age-young-adult', 'Adult': 'age-adult', 'Middle Grade': 'age-middle-grade' };
+    if (catMap[ageRating.age_category]) age_tags.push(catMap[ageRating.age_category]);
+    const ratingMap = { 'G': 'rated-g', 'PG': 'rated-pg', 'PG-13': 'rated-pg13', 'R': 'rated-r', 'X': 'rated-x' };
+    if (ratingMap[ageRating.content_rating]) age_tags.push(ratingMap[ageRating.content_rating]);
+    const recMap = { "Children's 0-2": 'age-rec-0', "Children's 3-5": 'age-rec-3', "Children's 6-8": 'age-rec-6', "Children's 9-12": 'age-rec-10', 'Teen 13-17': 'age-rec-14', 'Young Adult': 'age-rec-16', 'Adult': 'age-rec-18', 'Middle Grade': 'age-rec-8' };
+    if (recMap[ageRating.age_category]) age_tags.push(recMap[ageRating.age_category]);
+  } else if (typeof ageRating === 'number') {
+    if (ageRating <= 6) { age_tags.push('age-childrens', 'for-kids', 'rated-g', 'age-rec-0'); }
+    else if (ageRating <= 9) { age_tags.push('age-childrens', 'for-kids', 'rated-g', 'age-rec-6'); }
+    else if (ageRating <= 12) { age_tags.push('age-middle-grade', 'for-kids', 'rated-pg', 'age-rec-10'); }
+    else if (ageRating <= 15) { age_tags.push('age-teens', 'for-teens', 'rated-pg13', 'age-rec-14'); }
+    else if (ageRating <= 17) { age_tags.push('age-young-adult', 'for-ya', 'rated-pg13', 'age-rec-16'); }
+    else { age_tags.push('age-adult', 'not-for-kids', 'rated-r', 'age-rec-18'); }
+  }
+  return age_tags;
 }
 
 // ============================================================================
@@ -475,25 +513,18 @@ const HANDLERS = {
           if (desc.description) { description = desc.description; description_changed = true; }
         } catch (e) { console.warn('Description failed:', e.message); }
 
-        // Build age tags from structured age_rating
-        const age_tags = [];
-        const ar = classify.age_rating;
-        if (ar && typeof ar === 'object') {
-          age_tags.push(ar.intended_for_kids ? 'for-kids' : 'not-for-kids');
-          const catMap = { "Children's 0-2": 'age-childrens', "Children's 3-5": 'age-childrens', "Children's 6-8": 'age-childrens', "Children's 9-12": 'age-childrens', 'Teen 13-17': 'age-teens', 'Young Adult': 'age-young-adult', 'Adult': 'age-adult', 'Middle Grade': 'age-middle-grade' };
-          if (catMap[ar.age_category]) age_tags.push(catMap[ar.age_category]);
-          const rMap = { 'G': 'rated-g', 'PG': 'rated-pg', 'PG-13': 'rated-pg13', 'R': 'rated-r' };
-          if (rMap[ar.content_rating]) age_tags.push(rMap[ar.content_rating]);
-        }
+        const age_tags = buildAgeTags(classify.age_rating);
 
         // Merge all tags
-        const allTags = [...new Set([...(classify.tags || []), ...age_tags, ...dna_tags])];
+        // AI-produced tags only, policed; the caller MERGES them into the
+        // book's existing tags (see useScan.handlePipelineRescan).
+        const allTags = policeAiTags([...new Set([...(classify.tags || []), ...age_tags, ...dna_tags])]);
 
         results.push({
           abs_id: book.abs_id,
           success: true,
           metadata: {
-            genres: classify.genres || [],
+            genres: policeAiGenres(classify.genres, config),
             tags: allTags,
             themes: classify.themes || [],
             tropes: classify.tropes || [],
@@ -510,7 +541,8 @@ const HANDLERS = {
   },
 
   // === ABS Cache (client-side in-memory) ===
-  get_abs_cache_status: () => ({ stats: { total_items: 0 }, stale: true }),
+  // No local library cache in the web build.
+  get_abs_cache_status: () => ({ is_loaded: false, is_stale: true, stale: true, stats: { total_items: 0 } }),
   refresh_abs_cache: async () => ({ refreshed: true, stats: { total_items: 0 } }),
   get_cached_items: () => [],
   clear_abs_full_cache: () => 'Cache cleared',
@@ -621,25 +653,8 @@ If it's part of a series, fill in the name and book number. If standalone, use n
         const [response, dnaResponse] = await Promise.all([classifyPromise, dnaPromise]);
         const parsed = parseAIJson(response);
 
-        const age_tags = [];
         const ageRating = parsed.age_rating;
-        if (ageRating && typeof ageRating === 'object') {
-          if (ageRating.intended_for_kids === true) age_tags.push('for-kids');
-          else age_tags.push('not-for-kids');
-          const catMap = { "Children's 0-2": 'age-childrens', "Children's 3-5": 'age-childrens', "Children's 6-8": 'age-childrens', "Children's 9-12": 'age-childrens', 'Teen 13-17': 'age-teens', 'Young Adult': 'age-young-adult', 'Adult': 'age-adult', 'Middle Grade': 'age-middle-grade' };
-          if (catMap[ageRating.age_category]) age_tags.push(catMap[ageRating.age_category]);
-          const ratingMap = { 'G': 'rated-g', 'PG': 'rated-pg', 'PG-13': 'rated-pg13', 'R': 'rated-r', 'X': 'rated-x' };
-          if (ratingMap[ageRating.content_rating]) age_tags.push(ratingMap[ageRating.content_rating]);
-          const recMap = { "Children's 0-2": 'age-rec-0', "Children's 3-5": 'age-rec-3', "Children's 6-8": 'age-rec-6', "Children's 9-12": 'age-rec-10', 'Teen 13-17': 'age-rec-14', 'Young Adult': 'age-rec-16', 'Adult': 'age-rec-18', 'Middle Grade': 'age-rec-8' };
-          if (recMap[ageRating.age_category]) age_tags.push(recMap[ageRating.age_category]);
-        } else if (typeof ageRating === 'number') {
-          if (ageRating <= 6) { age_tags.push('age-childrens', 'for-kids', 'rated-g', 'age-rec-0'); }
-          else if (ageRating <= 9) { age_tags.push('age-childrens', 'for-kids', 'rated-g', 'age-rec-6'); }
-          else if (ageRating <= 12) { age_tags.push('age-middle-grade', 'for-kids', 'rated-pg', 'age-rec-10'); }
-          else if (ageRating <= 15) { age_tags.push('age-teens', 'for-teens', 'rated-pg13', 'age-rec-14'); }
-          else if (ageRating <= 17) { age_tags.push('age-young-adult', 'for-ya', 'rated-pg13', 'age-rec-16'); }
-          else { age_tags.push('age-adult', 'not-for-kids', 'rated-r', 'age-rec-18'); }
-        }
+        const age_tags = buildAgeTags(ageRating);
 
         let dna_tags = [];
         if (dnaResponse) {
@@ -648,7 +663,8 @@ If it's part of a series, fill in the name and book number. If standalone, use n
 
         return {
           id: book.id, success: true,
-          genres: parsed.genres || [], tags: parsed.tags || [],
+          // Policy applies to AI output only (never to existing ABS tags).
+          genres: policeAiGenres(parsed.genres, config), tags: policeAiTags(parsed.tags),
           age_tags, dna_tags,
           themes: parsed.themes || [], tropes: parsed.tropes || [],
           age_category: ageRating?.age_category || null,
@@ -753,15 +769,20 @@ Return JSON: {"genres":["Genre1","Genre2"]}`;
         const response = await callAI(config, SYSTEM_PROMPT, prompt, 500);
         const parsed = parseAIJson(response);
         // Enforce genre policy on AI output if enabled
-        const genres = config.genre_enforcement !== false
-          ? enforceGenrePolicyWithSplit(parsed.genres || [])
-          : (parsed.genres || []).slice(0, 3);
-        results.push({ id: book.id, success: true, genres });
+        const genres = policeAiGenres(parsed.genres, config);
+        const original = book.genres || [];
+        const changed = genres.length > 0 && JSON.stringify(genres) !== JSON.stringify(original);
+        results.push({ id: book.id, success: true, changed, genres, cleaned_genres: changed ? genres : original, original_genres: original });
       } catch (err) {
-        results.push({ id: book.id, success: false, error: err.message });
+        results.push({ id: book.id, success: false, changed: false, error: err.message });
       }
     }
-    return { results };
+    return {
+      results,
+      total_cleaned: results.filter(r => r.changed).length,
+      total_unchanged: results.filter(r => r.success && !r.changed).length,
+      total_failed: results.filter(r => !r.success).length,
+    };
   },
 
   // === GPT: Tag Assignment (standard tags + DNA, matching desktop classify_book) ===
@@ -795,7 +816,8 @@ Return ONLY valid JSON:
 {"tags":["tag-1","tag-2","tag-3"]}`;
         const response = await callAI(config, getSystemPrompt(config), prompt, 1000);
         const parsed = parseAIJson(response);
-        let standardTags = parsed.tags || [];
+        // Policy applies to AI output only; the UI merges these into existing tags.
+        let standardTags = policeAiTags((parsed.tags || []).filter(t => !String(t).startsWith('dna:')));
 
         // --- STEP 2: Generate DNA tags (skip if disabled) ---
         let dnaTags = [];
@@ -953,7 +975,15 @@ Return JSON: {"year":"2005"}`;
       const prompt = buildClassificationPrompt(book);
       const response = await callAI(config, SYSTEM_PROMPT, prompt, 1000);
       const parsed = parseAIJson(response);
-      return { success: true, age_rating: parsed.age_rating, age_rating_reason: parsed.age_rating_reason };
+      const ar = parsed.age_rating;
+      return {
+        success: true,
+        age_rating: ar,
+        age_rating_reason: parsed.age_rating_reason,
+        age_tags: policeAiTags(buildAgeTags(ar)),
+        age_category: ar && typeof ar === 'object' ? ar.age_category || null : null,
+        content_rating: ar && typeof ar === 'object' ? ar.content_rating || null : null,
+      };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -1198,7 +1228,9 @@ Return JSON: {"year":"2005"}`;
 
   // === Scan progress (no-op in client mode) ===
   get_scan_progress: () => ({ scanning: false, current: 0, total: 0 }),
-  cancel_scan: () => {},
+  cancel_scan: () => ({ cancelled: false }),
+  // Series analysis isn't available in web, so there is never one to cancel.
+  cancel_series_scan: () => ({ cancelled: false }),
 
   // === Undo (client-side) ===
   get_undo_status: () => ({ has_undo: false }),
