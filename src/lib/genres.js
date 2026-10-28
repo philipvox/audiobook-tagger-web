@@ -351,6 +351,58 @@ const _approvedGenresLower = new Map(
   APPROVED_GENRES.map((g) => [g.toLowerCase(), g])
 );
 const _approvedTagsSet = new Set(APPROVED_TAGS);
+const _approvedTagsLower = new Map(APPROVED_TAGS.map((t) => [t, t]));
+
+/** Minimum length (chars) of the shorter string for any fuzzy match. */
+export const FUZZY_MIN_LENGTH = 4;
+/** Minimum shorter/longer length ratio for a fuzzy match. */
+export const FUZZY_MIN_SIMILARITY = 0.5;
+
+function _tokens(s) {
+  return s.toLowerCase().split(/[^\p{L}\p{N}+']+/u).filter(Boolean);
+}
+
+/** True if `needle` tokens appear as a contiguous run inside `hay` tokens. */
+function _containsTokenRun(hay, needle) {
+  if (needle.length === 0 || needle.length > hay.length) return false;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (hay[i + j] !== needle[j]) { ok = false; break; }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+/**
+ * Fuzzy similarity between an input and an approved value. Returns a score in
+ * (0, 1] or 0 for "no match". A match requires:
+ *  - the shorter string to be at least FUZZY_MIN_LENGTH chars,
+ *  - the shorter string's words to appear as whole, contiguous words in the
+ *    longer one (no mid-word substring matches),
+ *  - shorter/longer length ratio >= FUZZY_MIN_SIMILARITY.
+ */
+export function fuzzySimilarity(a, b) {
+  const ta = _tokens(a), tb = _tokens(b);
+  const ja = ta.join(' '), jb = tb.join(' ');
+  if (!ja || !jb) return 0;
+  if (ja === jb) return 1;
+  const [shortT, longT, shortS, longS] = ja.length <= jb.length ? [ta, tb, ja, jb] : [tb, ta, jb, ja];
+  if (shortS.length < FUZZY_MIN_LENGTH) return 0;
+  if (!_containsTokenRun(longT, shortT)) return 0;
+  const ratio = shortS.length / longS.length;
+  return ratio >= FUZZY_MIN_SIMILARITY ? ratio : 0;
+}
+
+function bestFuzzyMatch(input, approvedMap) {
+  let best = null, bestScore = 0;
+  for (const [approvedLower, approved] of approvedMap) {
+    const score = fuzzySimilarity(input, approvedLower);
+    if (score > bestScore) { best = approved; bestScore = score; }
+  }
+  return best;
+}
 
 // =============================================================================
 // Public API
@@ -393,14 +445,9 @@ export function mapGenre(genre) {
     return aliased === "" ? null : aliased;
   }
 
-  // Partial match - if the genre contains an approved genre or vice versa
-  for (const [approvedLower, approved] of _approvedGenresLower) {
-    if (normalized.includes(approvedLower) || approvedLower.includes(normalized)) {
-      return approved;
-    }
-  }
-
-  return null;
+  // Partial match — token-level, minimum length and similarity enforced
+  // (a bare substring test mapped "a" or "fi" onto unrelated genres).
+  return bestFuzzyMatch(normalized, _approvedGenresLower);
 }
 
 /**
@@ -424,14 +471,9 @@ export function mapTag(tag) {
   const aliased = TAG_ALIASES.get(tag.trim().toLowerCase());
   if (aliased) return aliased;
 
-  // Partial match
-  for (const approved of APPROVED_TAGS) {
-    if (normalized.includes(approved) || approved.includes(normalized)) {
-      return approved;
-    }
-  }
-
-  return null;
+  // Partial match — token-level, minimum length and similarity enforced
+  // (a bare substring test mapped "a" → "police-procedural", "ice" → ...).
+  return bestFuzzyMatch(normalized, _approvedTagsLower);
 }
 
 /**
