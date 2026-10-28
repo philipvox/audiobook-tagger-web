@@ -35,6 +35,9 @@ jobs:
 
   deploy:
     needs: build
+    # The hosted app (tagger.mysecretlibrary.com) is self-hosted, so Pages is
+    # off on this repo. Forks that enable Pages still deploy.
+    if: github.repository != 'philipvox/audiobook-tagger-web'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
