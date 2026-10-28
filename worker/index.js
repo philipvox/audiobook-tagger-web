@@ -5,7 +5,12 @@
 // - Origin validation: only requests from allowed origins are processed
 // - Known API domains whitelisted (OpenAI, Anthropic)
 // - User ABS servers allowed only with valid origin
-// - Private/local IPs blocked (RFC 1918, link-local, loopback)
+// - Private/local targets blocked: RFC 1918, CGNAT, link-local, loopback,
+//   multicast/reserved; decimal/octal/hex IPv4 forms (normalized by the URL
+//   parser); IPv6 loopback/unspecified, IPv4-mapped/NAT64 forms, fc00::/7,
+//   fe80::/10, multicast; localhost and *.localhost
+// - Redirects are never followed automatically: each hop is re-validated
+//   (max 3) and credentials are dropped when the origin changes
 // - HTTPS-only targets enforced
 // - Only safe headers forwarded to targets
 // - Per-IP rate limiting (100 req/min)
@@ -33,16 +38,91 @@ const KNOWN_API_DOMAINS = new Set([
   'api.anthropic.com',
 ]);
 
-// Block all private/reserved IP ranges
-const BLOCKED_PREFIXES = [
-  'localhost', '127.', '0.0.0.0', '::1',
-  '169.254.', '10.', '192.168.',
-  '172.16.', '172.17.', '172.18.', '172.19.',
-  '172.20.', '172.21.', '172.22.', '172.23.',
-  '172.24.', '172.25.', '172.26.', '172.27.',
-  '172.28.', '172.29.', '172.30.', '172.31.',
-  'fc00:', 'fd00:', 'fe80:',
-];
+// ---------------------------------------------------------------------------
+// Target validation (SSRF). The WHATWG URL parser already normalizes
+// "127.1", "2130706433", "0x7f000001", "017700000001" to dotted IPv4 and
+// compresses IPv6, so we check the parsed hostname numerically.
+// ---------------------------------------------------------------------------
+
+function parseIPv4(host) {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.every(n => n >= 0 && n <= 255) ? o : null;
+}
+
+function isBlockedIPv4([a, b, c]) {
+  return a === 0                                  // 0.0.0.0/8 "this network"
+    || a === 10                                   // 10/8
+    || a === 127                                  // loopback
+    || (a === 100 && b >= 64 && b <= 127)         // 100.64/10 CGNAT
+    || (a === 169 && b === 254)                   // link-local / metadata
+    || (a === 172 && b >= 16 && b <= 31)          // 172.16/12
+    || (a === 192 && b === 168)                   // 192.168/16
+    || (a === 192 && b === 0 && c === 0)          // 192.0.0/24
+    || (a === 198 && (b === 18 || b === 19))      // benchmarking
+    || a >= 224;                                  // multicast + reserved + broadcast
+}
+
+/** Parse a (bracket-less) IPv6 literal into 8 16-bit groups, or null. */
+function parseIPv6(host) {
+  if (!host.includes(':')) return null;
+  let h = host.toLowerCase();
+  // Embedded dotted IPv4 tail (e.g. ::ffff:127.0.0.1) → two hex groups.
+  const v4 = h.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4) {
+    const o = parseIPv4(v4[2]);
+    if (!o) return null;
+    h = v4[1] + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
+  }
+  const halves = h.split('::');
+  if (halves.length > 2) return null;
+  const toGroups = (part) => (part ? part.split(':') : []);
+  const left = toGroups(halves[0]);
+  const right = halves.length === 2 ? toGroups(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - left.length - right.length : 0;
+  if (fill < 0) return null;
+  const groups = [...left, ...Array(fill).fill('0'), ...right];
+  if (groups.length !== 8) return null;
+  const nums = groups.map(g => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN));
+  return nums.some(Number.isNaN) ? null : nums;
+}
+
+function embeddedIPv4(g) {
+  return [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff];
+}
+
+function isBlockedIPv6(g) {
+  const allZeroPrefix = (n) => g.slice(0, n).every(x => x === 0);
+  if (g.every(x => x === 0)) return true;                       // ::
+  if (allZeroPrefix(7) && g[7] === 1) return true;              // ::1
+  if (allZeroPrefix(5) && g[5] === 0xffff) return true;       // ::ffff:0:0/96 IPv4-mapped (never needed)
+  if (allZeroPrefix(6)) return true;                            // ::a.b.c.d (deprecated compat)
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(x => x === 0)) return isBlockedIPv4(embeddedIPv4(g)); // NAT64
+  if ((g[0] & 0xfe00) === 0xfc00) return true;                  // fc00::/7 unique local
+  if ((g[0] & 0xffc0) === 0xfe80) return true;                  // fe80::/10 link-local
+  if ((g[0] & 0xffc0) === 0xfec0) return true;                  // fec0::/10 site-local
+  if ((g[0] & 0xff00) === 0xff00) return true;                  // multicast
+  if (g[0] === 0x2002) return isBlockedIPv4([g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff]); // 6to4
+  return false;
+}
+
+export function isBlockedHostname(hostname) {
+  let host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  if (!host) return true;
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const v4 = parseIPv4(host);
+  if (v4) return isBlockedIPv4(v4);
+  if (host.includes(':')) {
+    const v6 = parseIPv6(host);
+    return v6 ? isBlockedIPv6(v6) : true; // unparseable IPv6 literal → block
+  }
+  // A purely numeric/hex-looking host that the URL parser did not normalize
+  // to dotted IPv4 is suspicious; block it.
+  if (/^[0-9.]+$/.test(host) || /^0x[0-9a-f.]+$/i.test(host)) return true;
+  return false;
+}
 
 // Simple in-memory rate limiter (per worker instance)
 const rateLimitMap = new Map();
@@ -71,21 +151,55 @@ function cleanupRateLimits() {
   }
 }
 
-function isAllowedTarget(url) {
+export function isAllowedTarget(url) {
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname;
-
-    // Block private IPs
-    if (BLOCKED_PREFIXES.some(b => host.startsWith(b) || host === b)) return false;
-
     // Must be HTTPS
     if (parsed.protocol !== 'https:') return false;
-
+    // No credentials embedded in the URL
+    if (parsed.username || parsed.password) return false;
+    // Block private / loopback / link-local / reserved targets
+    if (isBlockedHostname(parsed.hostname)) return false;
     return true;
   } catch {
     return false;
   }
+}
+
+const MAX_REDIRECTS = 3;
+const CREDENTIAL_HEADERS = ['authorization', 'x-api-key'];
+
+/**
+ * fetch() without automatic redirects. Each Location is re-validated with
+ * isAllowedTarget; credentials are dropped when the origin changes; 303 (and
+ * 301/302 for non-GET) switch to a bodyless GET, like browsers do.
+ * Returns { response } or { blocked: true }.
+ */
+async function fetchWithValidatedRedirects(targetUrl, fetchOpts) {
+  let url = targetUrl;
+  let opts = { ...fetchOpts, redirect: 'manual' };
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const response = await fetch(url, opts);
+    const location = response.headers.get('Location');
+    if (response.status < 300 || response.status >= 400 || !location) {
+      return { response };
+    }
+    if (hop === MAX_REDIRECTS) return { tooMany: true };
+    const next = new URL(location, url).toString();
+    if (!isAllowedTarget(next)) return { blocked: true };
+    const headers = { ...opts.headers };
+    if (new URL(next).origin !== new URL(url).origin) {
+      for (const k of Object.keys(headers)) {
+        if (CREDENTIAL_HEADERS.includes(k.toLowerCase())) delete headers[k];
+      }
+    }
+    const toGet = response.status === 303 || ((response.status === 301 || response.status === 302) && opts.method !== 'GET');
+    opts = toGet
+      ? { method: 'GET', headers, redirect: 'manual' }
+      : { ...opts, headers, redirect: 'manual' };
+    url = next;
+  }
+  return { tooMany: true };
 }
 
 function isAllowedOrigin(origin, env) {
@@ -192,7 +306,14 @@ export default {
         fetchOpts.body = typeof body === 'string' ? body : JSON.stringify(body);
       }
 
-      const response = await fetch(targetUrl, fetchOpts);
+      const result = await fetchWithValidatedRedirects(targetUrl, fetchOpts);
+      if (result.blocked) {
+        return jsonResponse({ error: 'Redirect target not allowed (private IP or non-HTTPS)' }, 403, origin);
+      }
+      if (result.tooMany) {
+        return jsonResponse({ error: 'Too many redirects' }, 502, origin);
+      }
+      const response = result.response;
 
       // Return response with CORS headers
       const responseHeaders = new Headers(response.headers);
